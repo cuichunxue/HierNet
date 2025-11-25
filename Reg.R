@@ -424,10 +424,9 @@ tags$br(),
 tags$br(),
 tags$strong(“Strong hierarchy:”), “ 両方の主効果が必要”,
 tags$br(),
-tags$strong(“Weak hierarchy:”), “ 少なくとも一方の主効果が必要”
+tags$strong("Weak hierarchy:"), " 少なくとも一方の主効果が必要"
 ),
 
-```
     # データアップロード
     div(class = "analysis-card",
       div(class = "card-header", "データ入力"),
@@ -598,7 +597,6 @@ tags$strong(“Weak hierarchy:”), “ 少なくとも一方の主効果が必�
     )
   )
 )
-```
 
 )
 )
@@ -626,30 +624,28 @@ generate_sample_data <- function() {
 set.seed(42)
 n <- 200
 
-```
-# 説明変数
-X1 <- rnorm(n, 0, 1)  # 温度（標準化）
-X2 <- rnorm(n, 0, 1)  # 圧力
-X3 <- rnorm(n, 0, 1)  # 速度
-X4 <- rnorm(n, 0, 1)  # 材料硬度
-X5 <- rnorm(n, 0, 1)  # 湿度
+  # 説明変数
+  X1 <- rnorm(n, 0, 1)  # 温度（標準化）
+  X2 <- rnorm(n, 0, 1)  # 圧力
+  X3 <- rnorm(n, 0, 1)  # 速度
+  X4 <- rnorm(n, 0, 1)  # 材料硬度
+  X5 <- rnorm(n, 0, 1)  # 湿度
 
-# 目的変数: 主効果 + 交互作用
-Y <- 5 + 
-  2.0 * X1 + 1.5 * X2 + 0.8 * X3 + 0.3 * X4 + 0 * X5 +  # 主効果（X5は影響なし）
-  1.2 * X1 * X2 +   # 温度×圧力の交互作用
-  0.6 * X2 * X3 +   # 圧力×速度の交互作用
-  rnorm(n, 0, 1)     # 誤差
+  # 目的変数: 主効果 + 交互作用
+  Y <- 5 +
+    2.0 * X1 + 1.5 * X2 + 0.8 * X3 + 0.3 * X4 + 0 * X5 +  # 主効果（X5は影響なし）
+    1.2 * X1 * X2 +   # 温度×圧力の交互作用
+    0.6 * X2 * X3 +   # 圧力×速度の交互作用
+    rnorm(n, 0, 1)     # 誤差
 
-data.frame(
-  品質スコア = round(Y, 2),
-  温度 = round(X1, 3),
-  圧力 = round(X2, 3),
-  速度 = round(X3, 3),
-  材料硬度 = round(X4, 3),
-  湿度 = round(X5, 3)
-)
-```
+  data.frame(
+    品質スコア = round(Y, 2),
+    温度 = round(X1, 3),
+    圧力 = round(X2, 3),
+    速度 = round(X3, 3),
+    材料硬度 = round(X4, 3),
+    湿度 = round(X5, 3)
+  )
 
 }
 
@@ -659,22 +655,20 @@ observeEvent(input$data_file, {
 req(input$data_file)
 tryCatch({
 rv$data <- read.csv(input$data_file$datapath,
-header = input$header,
-fileEncoding = input$encoding,
-stringsAsFactors = FALSE)
+                     header = input$header,
+                     fileEncoding = input$encoding,
+                     stringsAsFactors = FALSE)
 
-```
-  # 数値列のみ抽出
-  numeric_cols <- names(rv$data)[sapply(rv$data, is.numeric)]
-  
-  updateSelectInput(session, "target_var", choices = numeric_cols)
-  updateSelectInput(session, "explanatory_vars", choices = numeric_cols)
-  
-  showNotification("データを読み込みました", type = "message")
-}, error = function(e) {
-  showNotification(paste("エラー:", e$message), type = "error")
-})
-```
+    # 数値列のみ抽出
+    numeric_cols <- names(rv$data)[sapply(rv$data, is.numeric)]
+
+    updateSelectInput(session, "target_var", choices = numeric_cols)
+    updateSelectInput(session, "explanatory_vars", choices = numeric_cols)
+
+    showNotification("データを読み込みました", type = "message")
+  }, error = function(e) {
+    showNotification(paste("エラー:", e$message), type = "error")
+  })
 
 })
 
@@ -683,17 +677,15 @@ stringsAsFactors = FALSE)
 observe({
 if (is.null(input$data_file)) {
 rv$data <- generate_sample_data()
-numeric_cols <- names(rv$data)
+    numeric_cols <- names(rv$data)
 
-```
-  updateSelectInput(session, "target_var", 
-                    choices = numeric_cols,
-                    selected = numeric_cols[1])
-  updateSelectInput(session, "explanatory_vars",
-                    choices = numeric_cols[-1],
-                    selected = numeric_cols[-1])
-}
-```
+    updateSelectInput(session, "target_var",
+                      choices = numeric_cols,
+                      selected = numeric_cols[1])
+    updateSelectInput(session, "explanatory_vars",
+                      choices = numeric_cols[-1],
+                      selected = numeric_cols[-1])
+  }
 
 })
 
@@ -722,20 +714,19 @@ rownames = FALSE
 # — 分析実行 —
 
 observeEvent(input$run_analysis, {
-req(rv$data, input$target_var, input$explanatory_vars)
+  req(rv$data, input$target_var, input$explanatory_vars)
 
-```
-# 変数数チェック
-if (length(input$explanatory_vars) < 2) {
-  showNotification("hierNetには2つ以上の説明変数が必要です", type = "error")
-  return()
-}
+  # 変数数チェック
+  if (length(input$explanatory_vars) < 2) {
+    showNotification("hierNetには2つ以上の説明変数が必要です", type = "error")
+    return()
+  }
 
-if (length(input$explanatory_vars) > 15) {
-  showNotification("変数が多すぎます。15個以下を推奨します", type = "warning")
-}
+  if (length(input$explanatory_vars) > 15) {
+    showNotification("変数が多すぎます。15個以下を推奨します", type = "warning")
+  }
 
-withProgress(message = 'hierNet分析実行中...', value = 0, {
+  withProgress(message = 'hierNet分析実行中...', value = 0, {
   tryCatch({
     # データ準備
     incProgress(0.1, detail = "データ準備中")
@@ -800,10 +791,7 @@ withProgress(message = 'hierNet分析実行中...', value = 0, {
     interaction_matrix <- fit$th
     rownames(interaction_matrix) <- colnames(X)
     colnames(interaction_matrix) <- colnames(X)
-    
-    # 切片
-    intercept <- fit$mx - sum(fit$mzz * main_effects) 
-    
+
     # 評価指標計算
     ss_res <- sum((y - predictions)^2)
     ss_tot <- sum((y - mean(y))^2)
@@ -844,457 +832,438 @@ withProgress(message = 'hierNet分析実行中...', value = 0, {
     
     showNotification("hierNet分析が完了しました", type = "message")
     
-  }, error = function(e) {
-    showNotification(paste("エラー:", e$message), type = "error")
-    print(e)
+    }, error = function(e) {
+      showNotification(paste("エラー:", e$message), type = "error")
+      print(e)
+    })
   })
-})
-```
 
 })
 
 # — メトリクス表示 —
 
 output$metrics_display <- renderUI({
-req(rv$results)
-res <- rv$results
+  req(rv$results)
+  res <- rv$results
 
-```
-# R²の色分け
-r2_class <- if (res$r_squared >= 0.8) "success" 
-            else if (res$r_squared >= 0.6) "warning" 
-            else "danger"
+  # R²の色分け
+  r2_class <- if (res$r_squared >= 0.8) "success"
+               else if (res$r_squared >= 0.6) "warning"
+               else "danger"
 
-tagList(
-  div(class = "metric-box",
-    div(class = "metric-label", "決定係数 R²"),
-    div(class = paste("metric-value", r2_class), 
-        sprintf("%.4f", res$r_squared))
-  ),
-  div(class = "metric-box",
-    div(class = "metric-label", "調整済み R²"),
-    div(class = "metric-value", sprintf("%.4f", res$adj_r_squared))
-  ),
-  div(class = "metric-box",
-    div(class = "metric-label", "RMSE"),
-    div(class = "metric-value", sprintf("%.4f", res$rmse))
-  ),
-  div(class = "metric-box",
-    div(class = "metric-label", "MAE"),
-    div(class = "metric-value", sprintf("%.4f", res$mae))
-  ),
-  div(class = "metric-box",
-    div(class = "metric-label", "選択主効果数"),
-    div(class = "metric-value", res$n_main)
-  ),
-  div(class = "metric-box",
-    div(class = "metric-label", "選択交互作用数"),
-    div(class = "metric-value", style = "color: #a371f7;", res$n_interaction)
-  ),
-  div(class = "metric-box",
-    div(class = "metric-label", "最適 λ"),
-    div(class = "metric-value", sprintf("%.4f", res$best_lambda))
-  ),
-  div(class = "metric-box",
-    div(class = "metric-label", "階層タイプ"),
-    div(class = "metric-value", style = "font-size: 1rem;", 
-        ifelse(res$hierarchy_type == "strong", "Strong", "Weak"))
+  tagList(
+    div(class = "metric-box",
+      div(class = "metric-label", "決定係数 R²"),
+      div(class = paste("metric-value", r2_class),
+          sprintf("%.4f", res$r_squared))
+    ),
+    div(class = "metric-box",
+      div(class = "metric-label", "調整済み R²"),
+      div(class = "metric-value", sprintf("%.4f", res$adj_r_squared))
+    ),
+    div(class = "metric-box",
+      div(class = "metric-label", "RMSE"),
+      div(class = "metric-value", sprintf("%.4f", res$rmse))
+    ),
+    div(class = "metric-box",
+      div(class = "metric-label", "MAE"),
+      div(class = "metric-value", sprintf("%.4f", res$mae))
+    ),
+    div(class = "metric-box",
+      div(class = "metric-label", "選択主効果数"),
+      div(class = "metric-value", res$n_main)
+    ),
+    div(class = "metric-box",
+      div(class = "metric-label", "選択交互作用数"),
+      div(class = "metric-value", style = "color: #a371f7;", res$n_interaction)
+    ),
+    div(class = "metric-box",
+      div(class = "metric-label", "最適 λ"),
+      div(class = "metric-value", sprintf("%.4f", res$best_lambda))
+    ),
+    div(class = "metric-box",
+      div(class = "metric-label", "階層タイプ"),
+      div(class = "metric-value", style = "font-size: 1rem;",
+          ifelse(res$hierarchy_type == "strong", "Strong", "Weak"))
+    )
   )
-)
-```
 
 })
 
 # — 回帰式表示 —
 
 output$equation_display <- renderUI({
-req(rv$results)
-res <- rv$results
+  req(rv$results)
+  res <- rv$results
 
-```
-# 切片
-terms <- sprintf("%.4f", res$intercept)
+  # 切片
+  terms <- sprintf("%.4f", res$intercept)
 
-# 主効果項
-for (i in seq_along(res$main_effects)) {
-  coef <- res$main_effects[i]
-  if (abs(coef) > 1e-6) {
-    var_name <- names(res$main_effects)[i]
-    sign <- if (coef > 0) " + " else " - "
-    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", var_name)
-  }
-}
-
-# 交互作用項
-int_mat <- res$interaction_matrix
-var_names <- res$var_names
-for (i in 1:(nrow(int_mat) - 1)) {
-  for (j in (i + 1):ncol(int_mat)) {
-    coef <- int_mat[i, j]
+  # 主効果項
+  for (i in seq_along(res$main_effects)) {
+    coef <- res$main_effects[i]
     if (abs(coef) > 1e-6) {
+      var_name <- names(res$main_effects)[i]
       sign <- if (coef > 0) " + " else " - "
-      interaction_term <- paste0(var_names[i], " × ", var_names[j])
-      terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × (", interaction_term, ")")
+      terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", var_name)
     }
   }
-}
 
-target_name <- input$target_var
-equation <- paste0(target_name, " = ", terms)
+  # 交互作用項
+  int_mat <- res$interaction_matrix
+  var_names <- res$var_names
+  for (i in 1:(nrow(int_mat) - 1)) {
+    for (j in (i + 1):ncol(int_mat)) {
+      coef <- int_mat[i, j]
+      if (abs(coef) > 1e-6) {
+        sign <- if (coef > 0) " + " else " - "
+        interaction_term <- paste0(var_names[i], " × ", var_names[j])
+        terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × (", interaction_term, ")")
+      }
+    }
+  }
 
-HTML(equation)
-```
+  target_name <- input$target_var
+  equation <- paste0(target_name, " = ", terms)
+
+  HTML(equation)
 
 })
 
 # — 係数テーブル —
 
 output$coef_table <- renderDT({
-req(rv$results)
-res <- rv$results
+  req(rv$results)
+  res <- rv$results
 
-```
-# 主効果
-main_df <- data.frame(
-  変数 = names(res$main_effects),
-  係数 = res$main_effects,
-  タイプ = "主効果",
-  選択 = ifelse(abs(res$main_effects) > 1e-6, "✓", ""),
-  stringsAsFactors = FALSE
-)
-
-# 交互作用
-int_mat <- res$interaction_matrix
-var_names <- res$var_names
-int_list <- list()
-idx <- 1
-for (i in 1:(nrow(int_mat) - 1)) {
-  for (j in (i + 1):ncol(int_mat)) {
-    coef <- int_mat[i, j]
-    int_list[[idx]] <- data.frame(
-      変数 = paste0(var_names[i], " × ", var_names[j]),
-      係数 = coef,
-      タイプ = "交互作用",
-      選択 = ifelse(abs(coef) > 1e-6, "✓", ""),
-      stringsAsFactors = FALSE
-    )
-    idx <- idx + 1
-  }
-}
-int_df <- do.call(rbind, int_list)
-
-# 結合してソート
-coef_df <- rbind(main_df, int_df)
-coef_df$絶対値 <- abs(coef_df$係数)
-coef_df <- coef_df[order(-coef_df$絶対値), ]
-coef_df$絶対値 <- NULL
-rownames(coef_df) <- NULL
-
-datatable(
-  coef_df,
-  options = list(
-    pageLength = 15,
-    dom = 'frtip',
-    ordering = FALSE
-  ),
-  rownames = FALSE,
-  selection = 'none'
-) %>%
-  formatRound(columns = "係数", digits = 4) %>%
-  formatStyle(
-    columns = "選択",
-    color = "#3fb950",
-    fontWeight = "bold"
-  ) %>%
-  formatStyle(
-    columns = "タイプ",
-    color = styleEqual(
-      c("主効果", "交互作用"),
-      c("#58a6ff", "#a371f7")
-    )
+  # 主効果
+  main_df <- data.frame(
+    変数 = names(res$main_effects),
+    係数 = res$main_effects,
+    タイプ = "主効果",
+    選択 = ifelse(abs(res$main_effects) > 1e-6, "✓", ""),
+    stringsAsFactors = FALSE
   )
-```
+
+  # 交互作用
+  int_mat <- res$interaction_matrix
+  var_names <- res$var_names
+  int_list <- list()
+  idx <- 1
+  for (i in 1:(nrow(int_mat) - 1)) {
+    for (j in (i + 1):ncol(int_mat)) {
+      coef <- int_mat[i, j]
+      int_list[[idx]] <- data.frame(
+        変数 = paste0(var_names[i], " × ", var_names[j]),
+        係数 = coef,
+        タイプ = "交互作用",
+        選択 = ifelse(abs(coef) > 1e-6, "✓", ""),
+        stringsAsFactors = FALSE
+      )
+      idx <- idx + 1
+    }
+  }
+  int_df <- do.call(rbind, int_list)
+
+  # 結合してソート
+  coef_df <- rbind(main_df, int_df)
+  coef_df$絶対値 <- abs(coef_df$係数)
+  coef_df <- coef_df[order(-coef_df$絶対値), ]
+  coef_df$絶対値 <- NULL
+  rownames(coef_df) <- NULL
+
+  datatable(
+    coef_df,
+    options = list(
+      pageLength = 15,
+      dom = 'frtip',
+      ordering = FALSE
+    ),
+    rownames = FALSE,
+    selection = 'none'
+  ) %>%
+    formatRound(columns = "係数", digits = 4) %>%
+    formatStyle(
+      columns = "選択",
+      color = "#3fb950",
+      fontWeight = "bold"
+    ) %>%
+    formatStyle(
+      columns = "タイプ",
+      color = styleEqual(
+        c("主効果", "交互作用"),
+        c("#58a6ff", "#a371f7")
+      )
+    )
 
 })
 
 # — 予測判定グラフ —
 
 output$prediction_plot <- renderPlotly({
-req(rv$results)
-res <- rv$results
+  req(rv$results)
+  res <- rv$results
 
-```
-df <- data.frame(
-  actual = res$y,
-  predicted = as.vector(res$predictions),
-  residual = res$y - as.vector(res$predictions)
-)
+  df <- data.frame(
+    actual = res$y,
+    predicted = as.vector(res$predictions),
+    residual = res$y - as.vector(res$predictions)
+  )
 
-# 理想線の範囲
-range_min <- min(c(df$actual, df$predicted)) * 0.95
-range_max <- max(c(df$actual, df$predicted)) * 1.05
+  # 理想線の範囲
+  range_min <- min(c(df$actual, df$predicted)) * 0.95
+  range_max <- max(c(df$actual, df$predicted)) * 1.05
 
-p <- ggplot(df, aes(x = actual, y = predicted)) +
-  # 理想線（y=x）
-  geom_abline(intercept = 0, slope = 1, 
-              color = "#30363d", linetype = "dashed", size = 1) +
-  # ±10%バンド
-  geom_ribbon(
-    data = data.frame(x = seq(range_min, range_max, length.out = 100)),
-    aes(x = x, ymin = x * 0.9, ymax = x * 1.1),
-    inherit.aes = FALSE,
-    fill = "#a371f7", alpha = 0.1
-  ) +
-  # データポイント
-  geom_point(aes(
-    text = sprintf("実測: %.2f<br>予測: %.2f<br>残差: %.2f",
-                   actual, predicted, residual)
-  ), color = "#a371f7", alpha = 0.7, size = 3) +
-  labs(x = "実測値", y = "予測値") +
-  theme_minimal() +
-  theme(
-    plot.background = element_rect(fill = "transparent", color = NA),
-    panel.background = element_rect(fill = "transparent", color = NA),
-    panel.grid.major = element_line(color = "#21262d"),
-    panel.grid.minor = element_blank(),
-    axis.text = element_text(color = "#8b949e"),
-    axis.title = element_text(color = "#c9d1d9")
-  ) +
-  coord_fixed(ratio = 1, xlim = c(range_min, range_max), 
-              ylim = c(range_min, range_max))
+  p <- ggplot(df, aes(x = actual, y = predicted)) +
+    # 理想線（y=x）
+    geom_abline(intercept = 0, slope = 1,
+                color = "#30363d", linetype = "dashed", size = 1) +
+    # ±10%バンド
+    geom_ribbon(
+      data = data.frame(x = seq(range_min, range_max, length.out = 100)),
+      aes(x = x, ymin = x * 0.9, ymax = x * 1.1),
+      inherit.aes = FALSE,
+      fill = "#a371f7", alpha = 0.1
+    ) +
+    # データポイント
+    geom_point(aes(
+      text = sprintf("実測: %.2f<br>予測: %.2f<br>残差: %.2f",
+                     actual, predicted, residual)
+    ), color = "#a371f7", alpha = 0.7, size = 3) +
+    labs(x = "実測値", y = "予測値") +
+    theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      panel.grid.major = element_line(color = "#21262d"),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(color = "#8b949e"),
+      axis.title = element_text(color = "#c9d1d9")
+    ) +
+    coord_fixed(ratio = 1, xlim = c(range_min, range_max),
+                ylim = c(range_min, range_max))
 
-ggplotly(p, tooltip = "text") %>%
-  layout(
-    paper_bgcolor = 'transparent',
-    plot_bgcolor = 'transparent',
-    font = list(color = '#c9d1d9')
-  ) %>%
-  config(displayModeBar = FALSE)
-```
+  ggplotly(p, tooltip = "text") %>%
+    layout(
+      paper_bgcolor = 'transparent',
+      plot_bgcolor = 'transparent',
+      font = list(color = '#c9d1d9')
+    ) %>%
+    config(displayModeBar = FALSE)
 
 })
 
 # — 残差プロット —
 
 output$residual_plot <- renderPlotly({
-req(rv$results)
-res <- rv$results
+  req(rv$results)
+  res <- rv$results
 
-```
-df <- data.frame(
-  residual = res$y - as.vector(res$predictions)
-)
-
-p <- ggplot(df, aes(x = residual)) +
-  geom_histogram(aes(y = after_stat(density)), 
-                 bins = 30, fill = "#a371f7", alpha = 0.6, color = "#0d1117") +
-  geom_density(color = "#3fb950", size = 1) +
-  geom_vline(xintercept = 0, color = "#f85149", linetype = "dashed") +
-  labs(x = "残差", y = "密度") +
-  theme_minimal() +
-  theme(
-    plot.background = element_rect(fill = "transparent", color = NA),
-    panel.background = element_rect(fill = "transparent", color = NA),
-    panel.grid.major = element_line(color = "#21262d"),
-    panel.grid.minor = element_blank(),
-    axis.text = element_text(color = "#8b949e"),
-    axis.title = element_text(color = "#c9d1d9")
+  df <- data.frame(
+    residual = res$y - as.vector(res$predictions)
   )
 
-ggplotly(p) %>%
-  layout(
-    paper_bgcolor = 'transparent',
-    plot_bgcolor = 'transparent',
-    font = list(color = '#c9d1d9')
-  ) %>%
-  config(displayModeBar = FALSE)
-```
+  p <- ggplot(df, aes(x = residual)) +
+    geom_histogram(aes(y = after_stat(density)),
+                   bins = 30, fill = "#a371f7", alpha = 0.6, color = "#0d1117") +
+    geom_density(color = "#3fb950", size = 1) +
+    geom_vline(xintercept = 0, color = "#f85149", linetype = "dashed") +
+    labs(x = "残差", y = "密度") +
+    theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      panel.grid.major = element_line(color = "#21262d"),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(color = "#8b949e"),
+      axis.title = element_text(color = "#c9d1d9")
+    )
+
+  ggplotly(p) %>%
+    layout(
+      paper_bgcolor = 'transparent',
+      plot_bgcolor = 'transparent',
+      font = list(color = '#c9d1d9')
+    ) %>%
+    config(displayModeBar = FALSE)
 
 })
 
 # — CV プロット —
 
 output$cv_plot <- renderPlot({
-req(rv$cv_fit)
+  req(rv$cv_fit)
 
-```
-cv_fit <- rv$cv_fit
+  cv_fit <- rv$cv_fit
 
-par(bg = "transparent", fg = "#c9d1d9", col.axis = "#8b949e", 
-    col.lab = "#c9d1d9", col.main = "#c9d1d9", mar = c(5, 4, 2, 2))
+  par(bg = "transparent", fg = "#c9d1d9", col.axis = "#8b949e",
+      col.lab = "#c9d1d9", col.main = "#c9d1d9", mar = c(5, 4, 2, 2))
 
-plot(cv_fit$lamlist, cv_fit$cv, 
-     type = "b", pch = 19, col = "#a371f7",
-     xlab = "Lambda", ylab = "Cross-Validation Error",
-     main = "")
+  plot(cv_fit$lamlist, cv_fit$cv,
+       type = "b", pch = 19, col = "#a371f7",
+       xlab = "Lambda", ylab = "Cross-Validation Error",
+       main = "")
 
-# エラーバー
-arrows(cv_fit$lamlist, cv_fit$cv - cv_fit$cv.se,
-       cv_fit$lamlist, cv_fit$cv + cv_fit$cv.se,
-       length = 0.02, angle = 90, code = 3, col = "#58a6ff")
+  # エラーバー
+  arrows(cv_fit$lamlist, cv_fit$cv - cv_fit$cv.se,
+         cv_fit$lamlist, cv_fit$cv + cv_fit$cv.se,
+         length = 0.02, angle = 90, code = 3, col = "#58a6ff")
 
-# 最適lambda
-abline(v = cv_fit$lamhat, col = "#3fb950", lty = 2, lwd = 2)
+  # 最適lambda
+  abline(v = cv_fit$lamhat, col = "#3fb950", lty = 2, lwd = 2)
 
-legend("topright", 
-       legend = c(paste("最適λ =", round(cv_fit$lamhat, 4))),
-       col = "#3fb950", lty = 2, lwd = 2,
-       text.col = "#c9d1d9",
-       bg = "#161b22",
-       box.col = "#30363d")
-```
+  legend("topright",
+         legend = c(paste("最適λ =", round(cv_fit$lamhat, 4))),
+         col = "#3fb950", lty = 2, lwd = 2,
+         text.col = "#c9d1d9",
+         bg = "#161b22",
+         box.col = "#30363d")
 
-}, bg = “transparent”)
+}, bg = "transparent")
 
 # — 主効果プロット —
 
 output$main_effect_plot <- renderPlotly({
-req(rv$results)
-res <- rv$results
+  req(rv$results)
+  res <- rv$results
 
-```
-df <- data.frame(
-  variable = names(res$main_effects),
-  coefficient = res$main_effects,
-  abs_coef = abs(res$main_effects)
-)
-
-df <- df[order(df$abs_coef), ]
-df$variable <- factor(df$variable, levels = df$variable)
-
-p <- ggplot(df, aes(x = coefficient, y = variable)) +
-  geom_col(aes(fill = coefficient > 0), alpha = 0.8, width = 0.7) +
-  geom_vline(xintercept = 0, color = "#30363d", size = 0.5) +
-  scale_fill_manual(values = c("TRUE" = "#3fb950", "FALSE" = "#f85149"), guide = "none") +
-  labs(x = "係数", y = "") +
-  theme_minimal() +
-  theme(
-    plot.background = element_rect(fill = "transparent", color = NA),
-    panel.background = element_rect(fill = "transparent", color = NA),
-    panel.grid.major.y = element_blank(),
-    panel.grid.major.x = element_line(color = "#21262d"),
-    panel.grid.minor = element_blank(),
-    axis.text = element_text(color = "#c9d1d9", size = 11),
-    axis.title = element_text(color = "#c9d1d9")
+  df <- data.frame(
+    variable = names(res$main_effects),
+    coefficient = res$main_effects,
+    abs_coef = abs(res$main_effects)
   )
 
-ggplotly(p) %>%
-  layout(
-    paper_bgcolor = 'transparent',
-    plot_bgcolor = 'transparent',
-    font = list(color = '#c9d1d9')
-  ) %>%
-  config(displayModeBar = FALSE)
-```
+  df <- df[order(df$abs_coef), ]
+  df$variable <- factor(df$variable, levels = df$variable)
+
+  p <- ggplot(df, aes(x = coefficient, y = variable)) +
+    geom_col(aes(fill = coefficient > 0), alpha = 0.8, width = 0.7) +
+    geom_vline(xintercept = 0, color = "#30363d", size = 0.5) +
+    scale_fill_manual(values = c("TRUE" = "#3fb950", "FALSE" = "#f85149"), guide = "none") +
+    labs(x = "係数", y = "") +
+    theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      panel.grid.major.y = element_blank(),
+      panel.grid.major.x = element_line(color = "#21262d"),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(color = "#c9d1d9", size = 11),
+      axis.title = element_text(color = "#c9d1d9")
+    )
+
+  ggplotly(p) %>%
+    layout(
+      paper_bgcolor = 'transparent',
+      plot_bgcolor = 'transparent',
+      font = list(color = '#c9d1d9')
+    ) %>%
+    config(displayModeBar = FALSE)
 
 })
 
 # — 交互作用ヒートマップ —
 
 output$interaction_heatmap <- renderPlotly({
-req(rv$results)
-res <- rv$results
+  req(rv$results)
+  res <- rv$results
 
-```
-int_mat <- res$interaction_matrix
-var_names <- res$var_names
+  int_mat <- res$interaction_matrix
+  var_names <- res$var_names
 
-# ヒートマップ用データ
-df <- expand.grid(
-  var1 = var_names,
-  var2 = var_names,
-  stringsAsFactors = FALSE
-)
-df$value <- as.vector(int_mat)
+  # ヒートマップ用データ
+  df <- expand.grid(
+    var1 = var_names,
+    var2 = var_names,
+    stringsAsFactors = FALSE
+  )
+  df$value <- as.vector(int_mat)
 
-p <- ggplot(df, aes(x = var1, y = var2, fill = value)) +
-  geom_tile(color = "#21262d", size = 0.5) +
-  geom_text(aes(label = ifelse(abs(value) > 1e-6, sprintf("%.2f", value), "")),
-            color = "#c9d1d9", size = 3) +
-  scale_fill_gradient2(
-    low = "#f85149", mid = "#0d1117", high = "#a371f7",
-    midpoint = 0, name = "係数"
-  ) +
-  labs(x = "", y = "") +
-  theme_minimal() +
-  theme(
-    plot.background = element_rect(fill = "transparent", color = NA),
-    panel.background = element_rect(fill = "transparent", color = NA),
-    panel.grid = element_blank(),
-    axis.text = element_text(color = "#c9d1d9", size = 10),
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.background = element_rect(fill = "#161b22", color = "#30363d"),
-    legend.text = element_text(color = "#c9d1d9"),
-    legend.title = element_text(color = "#c9d1d9")
-  ) +
-  coord_fixed()
+  p <- ggplot(df, aes(x = var1, y = var2, fill = value)) +
+    geom_tile(color = "#21262d", size = 0.5) +
+    geom_text(aes(label = ifelse(abs(value) > 1e-6, sprintf("%.2f", value), "")),
+              color = "#c9d1d9", size = 3) +
+    scale_fill_gradient2(
+      low = "#f85149", mid = "#0d1117", high = "#a371f7",
+      midpoint = 0, name = "係数"
+    ) +
+    labs(x = "", y = "") +
+    theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      panel.grid = element_blank(),
+      axis.text = element_text(color = "#c9d1d9", size = 10),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.background = element_rect(fill = "#161b22", color = "#30363d"),
+      legend.text = element_text(color = "#c9d1d9"),
+      legend.title = element_text(color = "#c9d1d9")
+    ) +
+    coord_fixed()
 
-ggplotly(p) %>%
-  layout(
-    paper_bgcolor = 'transparent',
-    plot_bgcolor = 'transparent',
-    font = list(color = '#c9d1d9')
-  ) %>%
-  config(displayModeBar = FALSE)
-```
+  ggplotly(p) %>%
+    layout(
+      paper_bgcolor = 'transparent',
+      plot_bgcolor = 'transparent',
+      font = list(color = '#c9d1d9')
+    ) %>%
+    config(displayModeBar = FALSE)
 
 })
 
 # — 交互作用テーブル —
 
 output$interaction_table <- renderDT({
-req(rv$results)
-res <- rv$results
+  req(rv$results)
+  res <- rv$results
 
-```
-int_mat <- res$interaction_matrix
-var_names <- res$var_names
+  int_mat <- res$interaction_matrix
+  var_names <- res$var_names
 
-# 選択された交互作用のみ抽出
-int_list <- list()
-idx <- 1
-for (i in 1:(nrow(int_mat) - 1)) {
-  for (j in (i + 1):ncol(int_mat)) {
-    coef <- int_mat[i, j]
-    if (abs(coef) > 1e-6) {
-      int_list[[idx]] <- data.frame(
-        変数1 = var_names[i],
-        変数2 = var_names[j],
-        交互作用係数 = coef,
-        stringsAsFactors = FALSE
-      )
-      idx <- idx + 1
+  # 選択された交互作用のみ抽出
+  int_list <- list()
+  idx <- 1
+  for (i in 1:(nrow(int_mat) - 1)) {
+    for (j in (i + 1):ncol(int_mat)) {
+      coef <- int_mat[i, j]
+      if (abs(coef) > 1e-6) {
+        int_list[[idx]] <- data.frame(
+          変数1 = var_names[i],
+          変数2 = var_names[j],
+          交互作用係数 = coef,
+          stringsAsFactors = FALSE
+        )
+        idx <- idx + 1
+      }
     }
   }
-}
 
-if (length(int_list) == 0) {
-  return(datatable(
-    data.frame(メッセージ = "選択された交互作用はありません"),
-    options = list(dom = 't'),
+  if (length(int_list) == 0) {
+    return(datatable(
+      data.frame(メッセージ = "選択された交互作用はありません"),
+      options = list(dom = 't'),
+      rownames = FALSE
+    ))
+  }
+
+  int_df <- do.call(rbind, int_list)
+  int_df <- int_df[order(-abs(int_df$交互作用係数)), ]
+  rownames(int_df) <- NULL
+
+  datatable(
+    int_df,
+    options = list(
+      pageLength = 10,
+      dom = 't',
+      ordering = FALSE
+    ),
     rownames = FALSE
-  ))
-}
-
-int_df <- do.call(rbind, int_list)
-int_df <- int_df[order(-abs(int_df$交互作用係数)), ]
-rownames(int_df) <- NULL
-
-datatable(
-  int_df,
-  options = list(
-    pageLength = 10,
-    dom = 't',
-    ordering = FALSE
-  ),
-  rownames = FALSE
-) %>%
-  formatRound(columns = "交互作用係数", digits = 4) %>%
-  formatStyle(
-    columns = "交互作用係数",
-    color = styleInterval(0, c("#f85149", "#a371f7"))
-  )
-```
+  ) %>%
+    formatRound(columns = "交互作用係数", digits = 4) %>%
+    formatStyle(
+      columns = "交互作用係数",
+      color = styleInterval(0, c("#f85149", "#a371f7"))
+    )
 
 })
 }
