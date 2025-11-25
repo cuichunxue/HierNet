@@ -621,8 +621,8 @@ results = NULL
 # — サンプルデータ生成 —
 
 generate_sample_data <- function() {
-set.seed(42)
-n <- 200
+  set.seed(42)
+  n <- 200
 
   # 説明変数
   X1 <- rnorm(n, 0, 1)  # 温度（標準化）
@@ -652,9 +652,9 @@ n <- 200
 # — データ読み込み —
 
 observeEvent(input$data_file, {
-req(input$data_file)
-tryCatch({
-rv$data <- read.csv(input$data_file$datapath,
+  req(input$data_file)
+  tryCatch({
+    rv$data <- read.csv(input$data_file$datapath,
                      header = input$header,
                      fileEncoding = input$encoding,
                      stringsAsFactors = FALSE)
@@ -662,8 +662,19 @@ rv$data <- read.csv(input$data_file$datapath,
     # 数値列のみ抽出
     numeric_cols <- names(rv$data)[sapply(rv$data, is.numeric)]
 
-    updateSelectInput(session, "target_var", choices = numeric_cols)
-    updateSelectInput(session, "explanatory_vars", choices = numeric_cols)
+    # 数値列の存在チェック
+    if (length(numeric_cols) < 2) {
+      showNotification("エラー: 数値列が2列以上必要です", type = "error")
+      rv$data <- NULL
+      return()
+    }
+
+    updateSelectInput(session, "target_var",
+                      choices = numeric_cols,
+                      selected = numeric_cols[1])
+    updateSelectInput(session, "explanatory_vars",
+                      choices = numeric_cols,
+                      selected = if(length(numeric_cols) > 1) numeric_cols[-1] else NULL)
 
     showNotification("データを読み込みました", type = "message")
   }, error = function(e) {
@@ -675,8 +686,8 @@ rv$data <- read.csv(input$data_file$datapath,
 # サンプルデータを初期表示
 
 observe({
-if (is.null(input$data_file)) {
-rv$data <- generate_sample_data()
+  if (is.null(input$data_file)) {
+    rv$data <- generate_sample_data()
     numeric_cols <- names(rv$data)
 
     updateSelectInput(session, "target_var",
@@ -686,29 +697,28 @@ rv$data <- generate_sample_data()
                       choices = numeric_cols[-1],
                       selected = numeric_cols[-1])
   }
-
 })
 
 # — データプレビュー —
 
 output$data_preview <- renderDT({
-req(rv$data)
-datatable(
-rv$data,
-options = list(
-pageLength = 10,
-scrollX = TRUE,
-dom = ‘frtip’,
-language = list(
-search = “検索:”,
-lengthMenu = “表示: *MENU* 件”,
-info = “*TOTAL* 件中 *START* - *END* 件表示”,
-paginate = list(previous = “前”, `next` = “次”)
-)
-),
-class = ‘stripe hover’,
-rownames = FALSE
-)
+  req(rv$data)
+  datatable(
+    rv$data,
+    options = list(
+      pageLength = 10,
+      scrollX = TRUE,
+      dom = 'frtip',
+      language = list(
+        search = "検索:",
+        lengthMenu = "表示: *MENU* 件",
+        info = "*TOTAL* 件中 *START* - *END* 件表示",
+        paginate = list(previous = "前", `next` = "次")
+      )
+    ),
+    class = 'stripe hover',
+    rownames = FALSE
+  )
 })
 
 # — 分析実行 —
@@ -741,7 +751,18 @@ observeEvent(input$run_analysis, {
       X <- X[complete_cases, ]
       y <- y[complete_cases]
     }
-    
+
+    # データ数の妥当性チェック
+    n_obs <- nrow(X)
+    n_vars <- ncol(X)
+    if (n_obs < 10) {
+      showNotification(paste0("エラー: 有効なデータが少なすぎます (", n_obs, "行)。最低10行必要です"), type = "error")
+      return()
+    }
+    if (n_obs < n_vars * 2) {
+      showNotification(paste0("警告: サンプル数(", n_obs, ")が変数数(", n_vars, ")の2倍未満です。結果が不安定になる可能性があります"), type = "warning")
+    }
+
     incProgress(0.2, detail = "交差検証実行中（時間がかかります）")
     
     # hierNet 交差検証
