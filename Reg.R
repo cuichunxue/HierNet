@@ -12,8 +12,6 @@
 
 suppressPackageStartupMessages({
 library(shiny)
-library(shinydashboard)
-library(shinyWidgets)
 library(hierNet)
 library(glmnet)
 library(dplyr)
@@ -21,7 +19,6 @@ library(tidyr)
 library(ggplot2)
 library(DT)
 library(plotly)
-library(scales)
 library(bslib)
 })
 
