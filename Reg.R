@@ -651,9 +651,12 @@ observeEvent(input$data_file, {
     updateSelectInput(session, "target_var",
                       choices = numeric_cols,
                       selected = numeric_cols[1])
+
+    # 説明変数のデフォルト選択
+    expl_default <- if (length(numeric_cols) > 1) numeric_cols[-1] else NULL
     updateSelectInput(session, "explanatory_vars",
                       choices = numeric_cols,
-                      selected = if(length(numeric_cols) > 1) numeric_cols[-1] else NULL)
+                      selected = expl_default)
 
     showNotification("データを読み込みました", type = "message")
   }, error = function(e) {
