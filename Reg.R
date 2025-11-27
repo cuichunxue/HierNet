@@ -25,27 +25,27 @@ library(bslib)
 # — カスタムテーマ設定 —
 
 custom_theme <- bs_theme(
-version = 5,
-bg = “#0d1117”,
-fg = “#c9d1d9”,
-primary = “#58a6ff”,
-secondary = “#21262d”,
-success = “#3fb950”,
-warning = “#d29922”,
-danger = “#f85149”,
-base_font = font_google(“IBM Plex Sans”),
-heading_font = font_google(“IBM Plex Mono”),
-code_font = font_google(“IBM Plex Mono”)
+  version = 5,
+  bg = "#0d1117",
+  fg = "#c9d1d9",
+  primary = "#58a6ff",
+  secondary = "#21262d",
+  success = "#3fb950",
+  warning = "#d29922",
+  danger = "#f85149",
+  base_font = font_google("IBM Plex Sans"),
+  heading_font = font_google("IBM Plex Mono"),
+  code_font = font_google("IBM Plex Mono")
 )
 
 # — カスタムCSS —
 
-custom_css <- “
+custom_css <- "
 /* ベーステーマ */
 body {
 background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
 min-height: 100vh;
-font-family: ‘IBM Plex Sans’, sans-serif;
+font-family: 'IBM Plex Sans', sans-serif;
 }
 
 /* ヘッダーデザイン */
@@ -57,7 +57,7 @@ margin-bottom: 2rem;
 }
 
 .app-title {
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-size: 1.8rem;
 font-weight: 700;
 color: #58a6ff;
@@ -89,7 +89,7 @@ box-shadow: 0 8px 32px rgba(88, 166, 255, 0.15);
 }
 
 .card-header {
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-size: 0.85rem;
 font-weight: 600;
 color: #58a6ff;
@@ -104,7 +104,7 @@ gap: 0.5rem;
 }
 
 .card-header::before {
-content: ‘▸’;
+content: '▸';
 color: #3fb950;
 }
 
@@ -114,7 +114,7 @@ background: #0d1117 !important;
 border: 1px solid #30363d !important;
 border-radius: 8px !important;
 color: #c9d1d9 !important;
-font-family: ‘IBM Plex Sans’, sans-serif !important;
+font-family: 'IBM Plex Sans', sans-serif !important;
 transition: all 0.2s ease !important;
 }
 
@@ -146,7 +146,7 @@ background: linear-gradient(135deg, #238636 0%, #2ea043 100%);
 border: none;
 border-radius: 8px;
 color: #ffffff;
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-weight: 600;
 font-size: 0.9rem;
 padding: 12px 24px;
@@ -180,7 +180,7 @@ background: #0d1117;
 border: 1px solid #30363d;
 border-radius: 8px;
 padding: 1.25rem;
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-size: 0.95rem;
 color: #79c0ff;
 overflow-x: auto;
@@ -212,7 +212,7 @@ transform: translateY(-3px);
 }
 
 .metric-label {
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-size: 0.7rem;
 color: #8b949e;
 text-transform: uppercase;
@@ -221,7 +221,7 @@ margin-bottom: 0.5rem;
 }
 
 .metric-value {
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-size: 1.5rem;
 font-weight: 700;
 color: #58a6ff;
@@ -233,7 +233,7 @@ color: #58a6ff;
 
 /* テーブルスタイル */
 .dataTables_wrapper {
-font-family: ‘IBM Plex Sans’, sans-serif;
+font-family: 'IBM Plex Sans', sans-serif;
 }
 
 table.dataTable {
@@ -245,7 +245,7 @@ border-spacing: 0 4px !important;
 table.dataTable thead th {
 background: #21262d !important;
 color: #8b949e !important;
-font-family: ‘IBM Plex Mono’, monospace !important;
+font-family: 'IBM Plex Mono', monospace !important;
 font-size: 0.8rem !important;
 font-weight: 600 !important;
 text-transform: uppercase !important;
@@ -306,7 +306,7 @@ border-bottom: 1px solid #30363d;
 }
 
 .nav-tabs .nav-link {
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-size: 0.85rem;
 color: #8b949e;
 border: none;
@@ -327,7 +327,7 @@ border-bottom: 2px solid #58a6ff;
 
 /* ラベルスタイル */
 .control-label {
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-size: 0.8rem;
 color: #8b949e;
 text-transform: uppercase;
@@ -340,7 +340,7 @@ margin-bottom: 0.5rem;
 display: inline-block;
 padding: 4px 10px;
 border-radius: 20px;
-font-family: ‘IBM Plex Mono’, monospace;
+font-family: 'IBM Plex Mono', monospace;
 font-size: 0.75rem;
 font-weight: 600;
 }
@@ -373,7 +373,7 @@ grid-template-columns: repeat(2, 1fr);
 font-size: 1.4rem;
 }
 }
-“
+"
 
 # ============================================================================
 
@@ -386,40 +386,40 @@ theme = custom_theme,
 tags$head(
 tags$style(HTML(custom_css)),
 tags$link(
-href = “https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap”,
-rel = “stylesheet”
+href = "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap",
+rel = "stylesheet"
 )
 ),
 
 # — ヘッダー —
 
-div(class = “main-header”,
-div(class = “container-fluid”,
-h1(class = “app-title”,
-tags$span(style = “color: #a371f7;”, “◆”),
-“ hierNet 階層的LASSO回帰”),
-p(class = “app-subtitle”,
-“Hierarchical LASSO with Strong/Weak Hierarchy | 主効果・交互作用の階層制約付き回帰分析”)
+div(class = "main-header",
+div(class = "container-fluid",
+h1(class = "app-title",
+tags$span(style = "color: #a371f7;", "◆"),
+" hierNet 階層的LASSO回帰"),
+p(class = "app-subtitle",
+"Hierarchical LASSO with Strong/Weak Hierarchy | 主効果・交互作用の階層制約付き回帰分析")
 )
 ),
 
 # — メインコンテンツ —
 
-div(class = “container-fluid”,
+div(class = "container-fluid",
 fluidRow(
 # === 左パネル: データ入力・設定 ===
 column(4,
 # hierNet説明
-div(class = “hiernet-info”,
-tags$strong(“hierNetとは？”),
+div(class = "hiernet-info",
+tags$strong("hierNetとは？"),
 tags$br(),
-“交互作用項 X₁×X₂ がモデルに選択されるには、”,
-“主効果 X₁ と X₂ が先に選択されている必要があるという”,
-tags$strong(“階層制約（hierarchy constraint）”),
-“を課したLASSO回帰です。”,
+"交互作用項 X₁×X₂ がモデルに選択されるには、",
+"主効果 X₁ と X₂ が先に選択されている必要があるという",
+tags$strong("階層制約（hierarchy constraint）"),
+"を課したLASSO回帰です。",
 tags$br(),
 tags$br(),
-tags$strong(“Strong hierarchy:”), “ 両方の主効果が必要”,
+tags$strong("Strong hierarchy:"), " 両方の主効果が必要",
 tags$br(),
 tags$strong("Weak hierarchy:"), " 少なくとも一方の主効果が必要"
 ),
