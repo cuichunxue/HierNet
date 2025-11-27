@@ -406,85 +406,69 @@ p(class = "app-subtitle",
 # — メインコンテンツ —
 
 div(class = "container-fluid",
-fluidRow(
-# === 左パネル: データ入力・設定 ===
-column(4,
-# hierNet説明
-div(class = "hiernet-info",
-tags$strong("hierNetとは？"),
-tags$br(),
-"交互作用項 X₁×X₂ がモデルに選択されるには、",
-"主効果 X₁ と X₂ が先に選択されている必要があるという",
-tags$strong("階層制約（hierarchy constraint）"),
-"を課したLASSO回帰です。",
-tags$br(),
-tags$br(),
-tags$strong("Strong hierarchy:"), " 両方の主効果が必要",
-tags$br(),
-tags$strong("Weak hierarchy:"), " 少なくとも一方の主効果が必要"
-),
-
-    # データアップロード
-    div(class = "analysis-card",
-      div(class = "card-header", "データ入力"),
-      fileInput("data_file", 
-                label = "CSVファイルをアップロード",
-                accept = c(".csv", ".CSV"),
-                buttonLabel = "選択",
-                placeholder = "ファイル未選択"),
-      checkboxInput("header", "ヘッダー行あり", value = TRUE),
-      selectInput("encoding", "文字エンコーディング",
-                  choices = c("UTF-8" = "UTF-8",
-                              "Shift-JIS" = "CP932",
-                              "EUC-JP" = "EUC-JP"),
-                  selected = "UTF-8"),
-      hr(style = "border-color: #30363d;"),
-      p(style = "color: #8b949e; font-size: 0.85rem;",
-        "💡 サンプルデータを使用する場合は、ファイルを選択せずに進んでください。")
+  # === コンパクト設定パネル（上部） ===
+  fluidRow(
+    column(3,
+      div(class = "analysis-card",
+        div(class = "card-header", "データ入力"),
+        fileInput("data_file",
+                  label = NULL,
+                  accept = c(".csv", ".CSV"),
+                  buttonLabel = "CSV選択",
+                  placeholder = "サンプルデータ使用"),
+        checkboxInput("header", "ヘッダー行あり", value = TRUE),
+        selectInput("encoding", "エンコーディング",
+                    choices = c("UTF-8" = "UTF-8",
+                                "Shift-JIS" = "CP932",
+                                "EUC-JP" = "EUC-JP"),
+                    selected = "UTF-8")
+      )
     ),
-    
-    # 変数選択
-    div(class = "analysis-card",
-      div(class = "card-header", "変数設定"),
-      selectInput("target_var", 
-                  label = "目的変数 (Y)",
-                  choices = NULL),
-      selectInput("explanatory_vars",
-                  label = "説明変数 (X)",
-                  choices = NULL,
-                  multiple = TRUE),
-      p(style = "color: #d29922; font-size: 0.8rem; margin-top: 0.5rem;",
-        "⚠️ hierNetは変数の全ペア交互作用を計算するため、変数は10個以下を推奨")
+    column(3,
+      div(class = "analysis-card",
+        div(class = "card-header", "変数設定"),
+        selectInput("target_var",
+                    label = "目的変数 (Y)",
+                    choices = NULL),
+        selectInput("explanatory_vars",
+                    label = "説明変数 (X)",
+                    choices = NULL,
+                    multiple = TRUE)
+      )
     ),
-    
-    # モデルパラメータ
-    div(class = "analysis-card",
-      div(class = "card-header", "hierNetパラメータ"),
-      selectInput("hierarchy_type",
-                  "階層制約タイプ",
-                  choices = c("Strong hierarchy" = "strong",
-                              "Weak hierarchy" = "weak"),
-                  selected = "strong"),
-      p(style = "color: #8b949e; font-size: 0.8rem; margin-top: -0.5rem;",
-        "Strong: 交互作用には両主効果が必要"),
-      sliderInput("nlam",
-                  "Lambda候補数",
-                  min = 10, max = 50, value = 20, step = 5),
-      checkboxInput("standardize", "変数を標準化", value = TRUE),
-      checkboxInput("center", "変数を中心化", value = TRUE),
-      hr(style = "border-color: #30363d;"),
-      sliderInput("nfolds",
-                  "交差検証フォールド数",
-                  min = 3, max = 10, value = 5, step = 1),
-      actionButton("run_analysis", 
-                   "分析実行",
-                   class = "btn-analysis",
-                   icon = icon("play"))
+    column(3,
+      div(class = "analysis-card",
+        div(class = "card-header", "モデル設定"),
+        selectInput("hierarchy_type",
+                    "階層制約",
+                    choices = c("Strong" = "strong",
+                                "Weak" = "weak"),
+                    selected = "strong"),
+        sliderInput("nlam",
+                    "Lambda数",
+                    min = 10, max = 50, value = 20, step = 5),
+        sliderInput("nfolds",
+                    "CV分割数",
+                    min = 3, max = 10, value = 5, step = 1)
+      )
+    ),
+    column(3,
+      div(class = "analysis-card",
+        div(class = "card-header", "オプション"),
+        checkboxInput("standardize", "変数を標準化", value = TRUE),
+        checkboxInput("center", "変数を中心化", value = TRUE),
+        tags$br(),
+        actionButton("run_analysis",
+                     "▶ 分析実行",
+                     class = "btn-analysis",
+                     style = "margin-top: 0.5rem;")
+      )
     )
   ),
-  
-  # === 右パネル: 結果表示 ===
-  column(8,
+
+  # === 結果表示エリア（下部全幅） ===
+  fluidRow(
+    column(12,
     # タブパネル
     tabsetPanel(
       type = "tabs",
@@ -593,8 +577,6 @@ tags$strong("Weak hierarchy:"), " 少なくとも一方の主効果が必要"
       )
     )
   )
-)
-
 )
 )
 
@@ -765,31 +747,32 @@ observeEvent(input$run_analysis, {
     # hierNet 交差検証
     cv_fit <- hierNet.cv(
       fit = hierNet.path(
-        x = X, 
+        x = X,
         y = y,
         nlam = input$nlam,
         strong = (input$hierarchy_type == "strong"),
-        standardize = input$standardize,
-        center = input$center
+        stand.main = input$standardize,
+        stand.int = FALSE
       ),
       x = X,
       y = y,
       nfolds = input$nfolds
     )
-    
+
     rv$cv_fit <- cv_fit
-    
+
     incProgress(0.3, detail = "最適モデル適合中")
-    
+
     # 最適lambdaでのモデル
     best_lambda <- cv_fit$lamhat
-    
+
     fit <- hierNet(
       x = X,
       y = y,
       lam = best_lambda,
       strong = (input$hierarchy_type == "strong"),
-      standardize = input$standardize,
+      stand.main = input$standardize,
+      stand.int = FALSE,
       center = input$center
     )
     
