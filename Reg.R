@@ -1,11 +1,19 @@
 # ============================================================================
-
 # hierNet 階層的LASSO回帰分析アプリケーション
-
 # Hierarchical LASSO Regression with Interaction Terms
-
+#
 # 主効果・交互作用の階層制約付きLASSO回帰
-
+#
+# 機能:
+# - Strong/Weak階層制約付きLASSO回帰
+# - 交差検証による最適λ選択
+# - インタラクティブな可視化
+# - サンプルデータによるクイックスタート
+#
+# 最適化:
+# - プロット用共通テーマ関数でコード重複を削減
+# - データ検証ロジックを統合
+# - plotlyレイアウト設定を再利用
 # ============================================================================
 
 # — パッケージ読み込み —
@@ -589,6 +597,54 @@ div(class = "container-fluid",
 
 server <- function(input, output, session) {
 
+# — ヘルパー関数 —
+
+# 共通プロットテーマ
+get_plot_theme <- function() {
+  theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      panel.grid.major = element_line(color = "#21262d"),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(color = "#8b949e"),
+      axis.title = element_text(color = "#c9d1d9")
+    )
+}
+
+# plotlyレイアウト設定
+apply_plotly_layout <- function(p) {
+  p %>%
+    layout(
+      paper_bgcolor = 'transparent',
+      plot_bgcolor = 'transparent',
+      font = list(color = '#c9d1d9')
+    ) %>%
+    config(displayModeBar = FALSE)
+}
+
+# データ検証関数
+validate_data <- function(X, y, min_obs = 10) {
+  n_obs <- nrow(X)
+  n_vars <- ncol(X)
+
+  if (n_obs < min_obs) {
+    return(list(
+      valid = FALSE,
+      message = paste0("エラー: 有効なデータが少なすぎます (", n_obs, "行)。最低", min_obs, "行必要です")
+    ))
+  }
+
+  if (n_obs < n_vars * 2) {
+    return(list(
+      valid = TRUE,
+      warning = paste0("警告: サンプル数(", n_obs, ")が変数数(", n_vars, ")の2倍未満です。結果が不安定になる可能性があります")
+    ))
+  }
+
+  return(list(valid = TRUE))
+}
+
 # — リアクティブ値 —
 
 rv <- reactiveValues(
@@ -736,14 +792,13 @@ observeEvent(input$run_analysis, {
     }
 
     # データ数の妥当性チェック
-    n_obs <- nrow(X)
-    n_vars <- ncol(X)
-    if (n_obs < 10) {
-      showNotification(paste0("エラー: 有効なデータが少なすぎます (", n_obs, "行)。最低10行必要です"), type = "error")
+    validation <- validate_data(X, y)
+    if (!validation$valid) {
+      showNotification(validation$message, type = "error")
       return()
     }
-    if (n_obs < n_vars * 2) {
-      showNotification(paste0("警告: サンプル数(", n_obs, ")が変数数(", n_vars, ")の2倍未満です。結果が不安定になる可能性があります"), type = "warning")
+    if (!is.null(validation$warning)) {
+      showNotification(validation$warning, type = "warning")
     }
 
     incProgress(0.2, detail = "交差検証実行中（時間がかかります）")
@@ -1020,41 +1075,24 @@ output$prediction_plot <- renderPlotly({
   range_max <- max(c(df$actual, df$predicted)) * 1.05
 
   p <- ggplot(df, aes(x = actual, y = predicted)) +
-    # 理想線（y=x）
     geom_abline(intercept = 0, slope = 1,
                 color = "#30363d", linetype = "dashed", size = 1) +
-    # ±10%バンド
     geom_ribbon(
       data = data.frame(x = seq(range_min, range_max, length.out = 100)),
       aes(x = x, ymin = x * 0.9, ymax = x * 1.1),
       inherit.aes = FALSE,
       fill = "#a371f7", alpha = 0.1
     ) +
-    # データポイント
     geom_point(aes(
       text = sprintf("実測: %.2f<br>予測: %.2f<br>残差: %.2f",
                      actual, predicted, residual)
     ), color = "#a371f7", alpha = 0.7, size = 3) +
     labs(x = "実測値", y = "予測値") +
-    theme_minimal() +
-    theme(
-      plot.background = element_rect(fill = "transparent", color = NA),
-      panel.background = element_rect(fill = "transparent", color = NA),
-      panel.grid.major = element_line(color = "#21262d"),
-      panel.grid.minor = element_blank(),
-      axis.text = element_text(color = "#8b949e"),
-      axis.title = element_text(color = "#c9d1d9")
-    ) +
+    get_plot_theme() +
     coord_fixed(ratio = 1, xlim = c(range_min, range_max),
                 ylim = c(range_min, range_max))
 
-  ggplotly(p, tooltip = "text") %>%
-    layout(
-      paper_bgcolor = 'transparent',
-      plot_bgcolor = 'transparent',
-      font = list(color = '#c9d1d9')
-    ) %>%
-    config(displayModeBar = FALSE)
+  apply_plotly_layout(ggplotly(p, tooltip = "text"))
 
 })
 
@@ -1074,23 +1112,9 @@ output$residual_plot <- renderPlotly({
     geom_density(color = "#3fb950", size = 1) +
     geom_vline(xintercept = 0, color = "#f85149", linetype = "dashed") +
     labs(x = "残差", y = "密度") +
-    theme_minimal() +
-    theme(
-      plot.background = element_rect(fill = "transparent", color = NA),
-      panel.background = element_rect(fill = "transparent", color = NA),
-      panel.grid.major = element_line(color = "#21262d"),
-      panel.grid.minor = element_blank(),
-      axis.text = element_text(color = "#8b949e"),
-      axis.title = element_text(color = "#c9d1d9")
-    )
+    get_plot_theme()
 
-  ggplotly(p) %>%
-    layout(
-      paper_bgcolor = 'transparent',
-      plot_bgcolor = 'transparent',
-      font = list(color = '#c9d1d9')
-    ) %>%
-    config(displayModeBar = FALSE)
+  apply_plotly_layout(ggplotly(p))
 
 })
 
@@ -1146,24 +1170,13 @@ output$main_effect_plot <- renderPlotly({
     geom_vline(xintercept = 0, color = "#30363d", size = 0.5) +
     scale_fill_manual(values = c("TRUE" = "#3fb950", "FALSE" = "#f85149"), guide = "none") +
     labs(x = "係数", y = "") +
-    theme_minimal() +
+    get_plot_theme() +
     theme(
-      plot.background = element_rect(fill = "transparent", color = NA),
-      panel.background = element_rect(fill = "transparent", color = NA),
       panel.grid.major.y = element_blank(),
-      panel.grid.major.x = element_line(color = "#21262d"),
-      panel.grid.minor = element_blank(),
-      axis.text = element_text(color = "#c9d1d9", size = 11),
-      axis.title = element_text(color = "#c9d1d9")
+      axis.text = element_text(color = "#c9d1d9", size = 11)
     )
 
-  ggplotly(p) %>%
-    layout(
-      paper_bgcolor = 'transparent',
-      plot_bgcolor = 'transparent',
-      font = list(color = '#c9d1d9')
-    ) %>%
-    config(displayModeBar = FALSE)
+  apply_plotly_layout(ggplotly(p))
 
 })
 
@@ -1193,10 +1206,8 @@ output$interaction_heatmap <- renderPlotly({
       midpoint = 0, name = "係数"
     ) +
     labs(x = "", y = "") +
-    theme_minimal() +
+    get_plot_theme() +
     theme(
-      plot.background = element_rect(fill = "transparent", color = NA),
-      panel.background = element_rect(fill = "transparent", color = NA),
       panel.grid = element_blank(),
       axis.text = element_text(color = "#c9d1d9", size = 10),
       axis.text.x = element_text(angle = 45, hjust = 1),
@@ -1206,13 +1217,7 @@ output$interaction_heatmap <- renderPlotly({
     ) +
     coord_fixed()
 
-  ggplotly(p) %>%
-    layout(
-      paper_bgcolor = 'transparent',
-      plot_bgcolor = 'transparent',
-      font = list(color = '#c9d1d9')
-    ) %>%
-    config(displayModeBar = FALSE)
+  apply_plotly_layout(ggplotly(p))
 
 })
 
