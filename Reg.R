@@ -1376,19 +1376,24 @@ server <- function(input, output, session) {
 
     r2_class <- get_r2_class(m$r_squared)
 
+    # Helper for formatting potentially NA values
+    fmt <- function(x, digits = 4) {
+      if (is.null(x) || is.na(x)) "N/A" else sprintf("%.*f", digits, x)
+    }
+
     tagList(
       div(class = "metric-box",
           div(class = "metric-label", "決定係数 R²"),
-          div(class = paste("metric-value", r2_class), sprintf("%.4f", m$r_squared))),
+          div(class = paste("metric-value", r2_class), fmt(m$r_squared))),
       div(class = "metric-box",
           div(class = "metric-label", "調整済み R²"),
-          div(class = "metric-value", sprintf("%.4f", m$adj_r_squared))),
+          div(class = "metric-value", fmt(m$adj_r_squared))),
       div(class = "metric-box",
           div(class = "metric-label", "RMSE"),
-          div(class = "metric-value", sprintf("%.4f", m$rmse))),
+          div(class = "metric-value", fmt(m$rmse))),
       div(class = "metric-box",
           div(class = "metric-label", "MAE"),
-          div(class = "metric-value", sprintf("%.4f", m$mae))),
+          div(class = "metric-value", fmt(m$mae))),
       div(class = "metric-box",
           div(class = "metric-label", "選択主効果数"),
           div(class = "metric-value", res$n_main)),
@@ -1397,7 +1402,7 @@ server <- function(input, output, session) {
           div(class = "metric-value", style = sprintf("color: %s;", COLORS$accent_purple), res$n_interaction)),
       div(class = "metric-box",
           div(class = "metric-label", "最適 λ"),
-          div(class = "metric-value", sprintf("%.4f", res$best_lambda))),
+          div(class = "metric-value", fmt(res$best_lambda))),
       div(class = "metric-box",
           div(class = "metric-label", "階層タイプ"),
           div(class = "metric-value", style = "font-size: 1rem;",
