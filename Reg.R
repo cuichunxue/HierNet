@@ -36,6 +36,10 @@ MIN_EXPLANATORY_VARS <- 2
 MAX_RECOMMENDED_VARS <- 15
 DEFAULT_SAMPLE_SIZE <- 200
 RANDOM_SEED <- 42
+MIN_SAMPLE_SIZE <- 10  # Minimum observations for reliable analysis
+
+# Null coalescing operator (for R < 4.1 compatibility)
+`%||%` <- function(x, y) if (is.null(x)) y else x
 
 # Color palette (GitHub-inspired dark theme)
 COLORS <- list(
@@ -414,21 +418,36 @@ validate_data <- function(X, y) {
     y <- y[complete_idx]
   }
 
-  # Check for constant columns
-  const_cols <- apply(X, 2, function(col) var(col) < .Machine$double.eps)
-  if (any(const_cols)) {
+  # Check for constant columns (handle NA from single observation)
+  const_cols <- apply(X, 2, function(col) {
+    v <- var(col, na.rm = TRUE)
+    is.na(v) || v < .Machine$double.eps
+  })
+  if (any(const_cols, na.rm = TRUE)) {
     const_names <- colnames(X)[const_cols]
     issues <- c(issues, sprintf("定数列を検出: %s", paste(const_names, collapse = ", ")))
     X <- X[, !const_cols, drop = FALSE]
   }
 
+  # Check minimum sample size
+  if (nrow(X) < MIN_SAMPLE_SIZE) {
+    issues <- c(issues, sprintf("サンプルサイズが小さすぎます（n=%d, 推奨: n≥%d）", nrow(X), MIN_SAMPLE_SIZE))
+  }
+
   # Check for highly correlated columns
-  if (ncol(X) > 1) {
-    cor_mat <- cor(X)
-    diag(cor_mat) <- 0
-    high_cor <- which(abs(cor_mat) > 0.99, arr.ind = TRUE)
-    if (nrow(high_cor) > 0) {
-      issues <- c(issues, "高相関変数ペアを検出（|r| > 0.99）")
+  if (ncol(X) > 1 && nrow(X) > 1) {
+    cor_mat <- tryCatch(cor(X), error = function(e) NULL)
+    if (!is.null(cor_mat)) {
+      diag(cor_mat) <- 0
+      # Handle NaN from singular columns
+      if (any(!is.finite(cor_mat))) {
+        issues <- c(issues, "完全共線性の変数ペアを検出")
+      } else {
+        high_cor <- which(abs(cor_mat) > 0.99, arr.ind = TRUE)
+        if (nrow(high_cor) > 0) {
+          issues <- c(issues, "高相関変数ペアを検出（|r| > 0.99）")
+        }
+      }
     }
   }
 
@@ -446,10 +465,19 @@ validate_data <- function(X, y) {
 #' @param int_mat Interaction matrix from hierNet
 #' @param var_names Variable names
 #' @param threshold Minimum absolute value to include
-#' @return Data frame of interactions
+#' @return Data frame of interactions (always has var1, var2, coefficient columns)
 extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHOLD) {
+  # Return properly structured empty data.frame
+
+  empty_result <- data.frame(
+    var1 = character(0),
+    var2 = character(0),
+    coefficient = numeric(0),
+    stringsAsFactors = FALSE
+  )
+
   n <- nrow(int_mat)
-  if (n < 2) return(data.frame())
+  if (is.null(n) || n < 2) return(empty_result)
 
   # Get upper triangle indices
   idx <- which(upper.tri(int_mat), arr.ind = TRUE)
@@ -458,7 +486,7 @@ extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHO
   # Filter by threshold
   keep <- abs(coefficients) > threshold
 
-  if (!any(keep)) return(data.frame())
+  if (!any(keep)) return(empty_result)
 
   data.frame(
     var1 = var_names[idx[keep, 1]],
@@ -499,10 +527,10 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
   paste0(target_name, " = ", terms)
 }
 
-#' Compute model metrics
+#' Compute model metrics with robust edge case handling
 #' @param y Actual values
 #' @param predictions Predicted values
-#' @param n_params Number of parameters
+#' @param n_params Number of parameters (excluding intercept)
 #' @return List of metrics
 compute_metrics <- function(y, predictions, n_params) {
   n <- length(y)
@@ -511,14 +539,28 @@ compute_metrics <- function(y, predictions, n_params) {
   ss_res <- sum(residuals^2)
   ss_tot <- sum((y - mean(y))^2)
 
-  # Prevent division by zero
-  r_squared <- if (ss_tot > .Machine$double.eps) 1 - ss_res / ss_tot else 0
+  # Handle zero variance in response
+  if (ss_tot < .Machine$double.eps) {
+    warning("目的変数の分散がゼロです")
+    r_squared <- NA_real_
+  } else {
+    r_squared <- 1 - ss_res / ss_tot
+    # Clamp to [0, 1] for numerical stability
+    r_squared <- max(0, min(1, r_squared))
+  }
 
   # Adjusted R² with proper degrees of freedom
-
   df_res <- n - n_params - 1
-  adj_r_squared <- if (df_res > 0) {
+  adj_r_squared <- if (df_res > 0 && !is.na(r_squared)) {
     1 - (1 - r_squared) * (n - 1) / df_res
+  } else {
+    NA_real_
+  }
+
+  # MAPE: handle individual zeros gracefully
+  non_zero_idx <- y != 0
+  mape <- if (sum(non_zero_idx) > 0) {
+    mean(abs(residuals[non_zero_idx] / y[non_zero_idx])) * 100
   } else {
     NA_real_
   }
@@ -528,9 +570,11 @@ compute_metrics <- function(y, predictions, n_params) {
     adj_r_squared = adj_r_squared,
     rmse = sqrt(mean(residuals^2)),
     mae = mean(abs(residuals)),
-    mape = if (all(y != 0)) mean(abs(residuals / y)) * 100 else NA_real_,
+    mape = mape,
     max_error = max(abs(residuals)),
-    residuals = residuals
+    residuals = residuals,
+    n = n,
+    df_residual = df_res
   )
 }
 
@@ -641,9 +685,9 @@ generate_sample_data <- function(
     )
   )
 
-  # Compute response
+  # Compute response (explicit vectorization for matrix multiplication)
   Y <- coeffs$intercept +
-    X %*% coeffs$main +
+    as.vector(X %*% coeffs$main) +
     coeffs$int12 * X[, 1] * X[, 2] +
     coeffs$int23 * X[, 2] * X[, 3] +
     coeffs$quad1 * X[, 1]^2 +
@@ -674,6 +718,7 @@ generate_sample_data <- function(
 #' @param standardize Standardize predictors
 #' @param center Center predictors
 #' @return List with fit, cv_fit, and extracted results
+#' @throws Error if analysis fails
 run_hiernet_analysis <- function(
     X, y,
     strong = TRUE,
@@ -682,50 +727,96 @@ run_hiernet_analysis <- function(
     standardize = TRUE,
     center = TRUE
 ) {
+  # Input validation
+  if (!is.matrix(X)) X <- as.matrix(X)
+  if (nrow(X) < nfolds) {
+    stop(sprintf("サンプル数(%d)がCV fold数(%d)より少ないです", nrow(X), nfolds))
+  }
+
   # Fit lambda path (done once, reused for CV and final fit)
-  path_fit <- hierNet.path(
-    x = X,
-    y = y,
-    nlam = nlam,
-    strong = strong,
-    standardize = standardize,
-    center = center
+  path_fit <- tryCatch(
+    hierNet.path(
+      x = X,
+      y = y,
+      nlam = nlam,
+      strong = strong,
+      standardize = standardize,
+      center = center
+    ),
+    error = function(e) {
+      stop(sprintf("hierNet.path failed: %s", e$message))
+    }
   )
 
   # Cross-validation
-  cv_fit <- hierNet.cv(
-    fit = path_fit,
-    x = X,
-    y = y,
-    nfolds = nfolds
+  cv_fit <- tryCatch(
+    hierNet.cv(
+      fit = path_fit,
+      x = X,
+      y = y,
+      nfolds = nfolds
+    ),
+    error = function(e) {
+      stop(sprintf("Cross-validation failed: %s", e$message))
+    }
   )
 
+  # Validate CV result
   best_lambda <- cv_fit$lamhat
+  if (is.null(best_lambda) || is.na(best_lambda) || best_lambda <= 0) {
+    stop("交差検証で最適なλを見つけられませんでした")
+  }
 
   # Final model with optimal lambda
-  final_fit <- hierNet(
-    x = X,
-    y = y,
-    lam = best_lambda,
-    strong = strong,
-    standardize = standardize,
-    center = center
+  final_fit <- tryCatch(
+    hierNet(
+      x = X,
+      y = y,
+      lam = best_lambda,
+      strong = strong,
+      standardize = standardize,
+      center = center
+    ),
+    error = function(e) {
+      stop(sprintf("Final model fitting failed: %s", e$message))
+    }
   )
+
+  # Validate fit result
+  if (is.null(final_fit$bp) || is.null(final_fit$bn)) {
+    stop("モデルフィッティングの結果が不正です")
+  }
 
   # Extract coefficients
   main_effects <- final_fit$bp - final_fit$bn
   names(main_effects) <- colnames(X)
 
   interaction_matrix <- final_fit$th
-  rownames(interaction_matrix) <- colnames(X)
-  colnames(interaction_matrix) <- colnames(X)
+  if (!is.null(interaction_matrix)) {
+    rownames(interaction_matrix) <- colnames(X)
+    colnames(interaction_matrix) <- colnames(X)
+  } else {
+    # Create zero matrix if th is NULL
+    p <- ncol(X)
+    interaction_matrix <- matrix(0, nrow = p, ncol = p)
+    rownames(interaction_matrix) <- colnames(X)
+    colnames(interaction_matrix) <- colnames(X)
+  }
 
   # Compute predictions
-  predictions <- as.vector(predict(final_fit, newx = X))
+  predictions <- tryCatch(
+    as.vector(predict(final_fit, newx = X)),
+    error = function(e) {
+      warning("予測計算に失敗しました。フィット値を使用します")
+      as.vector(final_fit$yhat)
+    }
+  )
 
   # Estimate intercept (for display purposes)
   # Note: hierNet internally handles centering, so we reconstruct for interpretation
-  intercept <- mean(y) - sum(colMeans(X) * main_effects)
+  col_means <- colMeans(X, na.rm = TRUE)
+  intercept <- mean(y, na.rm = TRUE) - sum(col_means * main_effects)
+  if (is.na(intercept)) intercept <- 0
 
   list(
     fit = final_fit,
@@ -1101,6 +1192,25 @@ server <- function(input, output, session) {
       return()
     }
 
+    # Check minimum columns for hierNet (target + at least 2 explanatory)
+    if (length(numeric_cols) < 3) {
+      showNotification(
+        sprintf("hierNetには最低3つの数値列が必要です（現在: %d列）", length(numeric_cols)),
+        type = "warning"
+      )
+    }
+
+    # Check sample size vs number of variables
+    n_obs <- nrow(df)
+    n_vars <- length(numeric_cols) - 1  # excluding target
+    if (n_obs < 10 * n_vars) {
+      showNotification(
+        sprintf("サンプルサイズ(%d)が変数数(%d)に対して小さい可能性があります（推奨: n≥10p）",
+                n_obs, n_vars),
+        type = "warning"
+      )
+    }
+
     updateSelectInput(session, "target_var", choices = numeric_cols, selected = numeric_cols[1])
 
     explanatory_choices <- if (length(numeric_cols) > 1) numeric_cols[-1] else numeric_cols
@@ -1206,7 +1316,7 @@ server <- function(input, output, session) {
         n_params <- active_counts$n_main + active_counts$n_interaction
         metrics <- compute_metrics(y, analysis_result$predictions, n_params)
 
-        incProgress(0.2, detail = "結果整理中")
+        incProgress(0.15, detail = "結果整理中")
 
         # Store results
         rv$analysis <- list(
@@ -1227,12 +1337,30 @@ server <- function(input, output, session) {
           model_type = input$model_type
         )
 
+        incProgress(0.05, detail = "完了")
+
         updateTabsetPanel(session, "result_tabs", selected = "result_tab")
-        showNotification("hierNet分析が完了しました", type = "message")
+        showNotification(
+          sprintf("hierNet分析が完了しました（R²=%.3f, 選択変数: 主効果%d, 交互作用%d）",
+                  metrics$r_squared %||% 0, active_counts$n_main, active_counts$n_interaction),
+          type = "message",
+          duration = 5
+        )
 
       }, error = function(e) {
-        showNotification(sprintf("エラー: %s", e$message), type = "error")
-        message("hierNet Error: ", e$message)
+        # User-friendly error messages
+        err_msg <- e$message
+        user_msg <- if (grepl("fold", err_msg, ignore.case = TRUE)) {
+          "サンプル数が少なすぎます。CV fold数を減らしてください"
+        } else if (grepl("singular|collinear", err_msg, ignore.case = TRUE)) {
+          "変数間に完全共線性があります。変数を見直してください"
+        } else if (grepl("memory|allocate", err_msg, ignore.case = TRUE)) {
+          "メモリ不足です。変数数を減らしてください"
+        } else {
+          sprintf("分析エラー: %s", err_msg)
+        }
+        showNotification(user_msg, type = "error", duration = 10)
+        message("hierNet Error: ", err_msg)
       })
     })
   })
@@ -1355,21 +1483,45 @@ server <- function(input, output, session) {
 
   output$prediction_plot <- renderPlotly({
     req(rv$analysis)
+    req(rv$analysis$metrics)
     res <- rv$analysis
 
+    # Prepare data with pre-computed tooltip text
     df <- data.frame(
       actual = res$y,
       predicted = res$predictions,
-      residual = res$metrics$residuals
+      residual = res$metrics$residuals,
+      stringsAsFactors = FALSE
     )
+    df$tooltip <- sprintf("実測: %.2f<br>予測: %.2f<br>残差: %.2f",
+                          df$actual, df$predicted, df$residual)
+
+    # Handle edge case: single observation
+    if (nrow(df) < 2) {
+      p <- ggplot(df, aes(x = actual, y = predicted)) +
+        geom_point(aes(text = tooltip), color = COLORS$accent_purple, size = 5) +
+        labs(x = "実測値", y = "予測値", title = "（データ点が少なすぎます）") +
+        theme_hiernet()
+      return(ggplotly(p, tooltip = "text") |> layout_hiernet())
+    }
 
     range_min <- min(c(df$actual, df$predicted)) * 0.95
     range_max <- max(c(df$actual, df$predicted)) * 1.05
 
-    reg_fit <- lm(predicted ~ actual, data = df)
-    reg_coef <- coef(reg_fit)
+    # Handle identical values (zero range)
+    if (abs(range_max - range_min) < .Machine$double.eps) {
+      range_min <- range_min - 1
+      range_max <- range_max + 1
+    }
 
-    ann_text <- sprintf("R² = %.3f\nRMSE = %.3f", res$metrics$r_squared, res$metrics$rmse)
+    # Safe regression line calculation
+    reg_coef <- tryCatch({
+      fit <- lm(predicted ~ actual, data = df)
+      coef(fit)
+    }, error = function(e) c(0, 1))
+
+    r2_display <- if (is.na(res$metrics$r_squared)) "NA" else sprintf("%.3f", res$metrics$r_squared)
+    ann_text <- sprintf("R² = %s\nRMSE = %.3f", r2_display, res$metrics$rmse)
 
     p <- ggplot(df, aes(x = actual, y = predicted)) +
       geom_abline(intercept = 0, slope = 1, color = COLORS$border, linetype = "dashed", linewidth = 1) +
@@ -1378,12 +1530,16 @@ server <- function(input, output, session) {
         aes(x = x, ymin = x * 0.9, ymax = x * 1.1),
         inherit.aes = FALSE,
         fill = COLORS$accent_purple, alpha = 0.08
-      ) +
-      geom_abline(intercept = reg_coef[1], slope = reg_coef[2], color = COLORS$accent_green, linewidth = 1.0) +
-      geom_point(
-        aes(text = sprintf("実測: %.2f<br>予測: %.2f<br>残差: %.2f", actual, predicted, residual)),
-        color = COLORS$accent_purple, alpha = 0.7, size = 3
-      ) +
+      )
+
+    # Only add regression line if coefficients are valid
+    if (!any(is.na(reg_coef))) {
+      p <- p + geom_abline(intercept = reg_coef[1], slope = reg_coef[2],
+                           color = COLORS$accent_green, linewidth = 1.0)
+    }
+
+    p <- p +
+      geom_point(aes(text = tooltip), color = COLORS$accent_purple, alpha = 0.7, size = 3) +
       annotate(
         "text",
         x = range_min + 0.03 * (range_max - range_min),
@@ -1424,7 +1580,20 @@ server <- function(input, output, session) {
 
   output$cv_plot <- renderPlot({
     req(rv$analysis)
+    req(rv$analysis$cv_fit)
     cv_fit <- rv$analysis$cv_fit
+
+    # Validate CV fit data
+    if (!all(c("lamlist", "cv", "cv.se", "lamhat") %in% names(cv_fit))) {
+      plot.new()
+      text(0.5, 0.5, "CV データが不完全です", col = COLORS$text_muted)
+      return(NULL)
+    }
+    if (length(cv_fit$lamlist) != length(cv_fit$cv)) {
+      plot.new()
+      text(0.5, 0.5, "CV データ長が不一致です", col = COLORS$text_muted)
+      return(NULL)
+    }
 
     par(
       bg = "transparent",
@@ -1441,11 +1610,14 @@ server <- function(input, output, session) {
       xlab = "Lambda", ylab = "Cross-Validation Error", main = ""
     )
 
-    arrows(
-      cv_fit$lamlist, cv_fit$cv - cv_fit$cv.se,
-      cv_fit$lamlist, cv_fit$cv + cv_fit$cv.se,
-      length = 0.02, angle = 90, code = 3, col = COLORS$accent_blue
-    )
+    # Only draw error bars if cv.se is valid
+    if (!is.null(cv_fit$cv.se) && length(cv_fit$cv.se) == length(cv_fit$cv)) {
+      arrows(
+        cv_fit$lamlist, cv_fit$cv - cv_fit$cv.se,
+        cv_fit$lamlist, cv_fit$cv + cv_fit$cv.se,
+        length = 0.02, angle = 90, code = 3, col = COLORS$accent_blue
+      )
+    }
 
     abline(v = cv_fit$lamhat, col = COLORS$accent_green, lty = 2, lwd = 2)
 
