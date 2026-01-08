@@ -715,17 +715,13 @@ generate_sample_data <- function(
 #' @param strong Use strong hierarchy constraint
 #' @param nlam Number of lambda values
 #' @param nfolds Number of CV folds
-#' @param standardize Standardize predictors
-#' @param center Center predictors
 #' @return List with fit, cv_fit, and extracted results
 #' @throws Error if analysis fails
 run_hiernet_analysis <- function(
     X, y,
     strong = TRUE,
     nlam = 20,
-    nfolds = 5,
-    standardize = TRUE,
-    center = TRUE
+    nfolds = 5
 ) {
   # Input validation
   if (!is.matrix(X)) X <- as.matrix(X)
@@ -767,14 +763,13 @@ run_hiernet_analysis <- function(
   }
 
   # Final model with optimal lambda
+  # Note: hierNet() in some versions does NOT support standardize/center arguments
   final_fit <- tryCatch(
     hierNet(
       x = X,
       y = y,
       lam = best_lambda,
-      strong = strong,
-      standardize = standardize,
-      center = center
+      strong = strong
     ),
     error = function(e) {
       stop(sprintf("Final model fitting failed: %s", e$message))
@@ -997,8 +992,6 @@ ui <- fluidPage(
             "Strong: 交互作用には両主効果が必要"
           ),
           sliderInput("nlam", "Lambda候補数", min = 10, max = 50, value = 20, step = 5),
-          checkboxInput("standardize", "変数を標準化", value = TRUE),
-          checkboxInput("center", "変数を中心化", value = TRUE),
           hr(style = sprintf("border-color: %s;", COLORS$border)),
           sliderInput("nfolds", "交差検証フォールド数", min = 3, max = 10, value = 5, step = 1),
           actionButton("run_analysis", "分析実行", class = "btn-analysis", icon = icon("play"))
@@ -1299,9 +1292,7 @@ server <- function(input, output, session) {
           y = y,
           strong = (input$hierarchy_type == "strong"),
           nlam = input$nlam,
-          nfolds = input$nfolds,
-          standardize = input$standardize,
-          center = input$center
+          nfolds = input$nfolds
         )
 
         incProgress(0.3, detail = "評価指標計算中")
