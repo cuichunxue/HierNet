@@ -734,14 +734,13 @@ run_hiernet_analysis <- function(
   }
 
   # Fit lambda path (done once, reused for CV and final fit)
+  # Note: hierNet.path() does NOT support standardize/center arguments
   path_fit <- tryCatch(
     hierNet.path(
       x = X,
       y = y,
       nlam = nlam,
-      strong = strong,
-      standardize = standardize,
-      center = center
+      strong = strong
     ),
     error = function(e) {
       stop(sprintf("hierNet.path failed: %s", e$message))

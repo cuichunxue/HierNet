@@ -231,9 +231,9 @@ run_hiernet_analysis <- function(
     stop(sprintf("サンプル数(%d)がCV fold数(%d)より少ないです", nrow(X), nfolds))
   }
 
+  # Note: hierNet.path() does NOT support standardize/center arguments
   path_fit <- tryCatch(
-    hierNet.path(x = X, y = y, nlam = nlam, strong = strong,
-                 standardize = standardize, center = center),
+    hierNet.path(x = X, y = y, nlam = nlam, strong = strong),
     error = function(e) stop(sprintf("hierNet.path failed: %s", e$message))
   )
 
