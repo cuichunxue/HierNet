@@ -542,7 +542,8 @@ extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHO
 #' @param var_names Variable names
 #' @param target_name Target variable name
 #' @return Character string of equation
-build_equation <- function(intercept, main_effects, int_mat, var_names, target_name) {
+build_equation <- function(intercept, main_effects, int_mat, var_names, target_name,
+                          scale = "original", mx = NULL) {
   terms <- sprintf("%.4f", intercept)
 
   # Main effects (vectorized filter)
@@ -550,7 +551,21 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
   for (i in which(active_main)) {
     coef <- main_effects[i]
     sign <- if (coef > 0) " + " else " - "
-    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", names(main_effects)[i])
+    var_name <- names(main_effects)[i]
+
+    if (scale == "original" && !is.null(mx)) {
+      # Centered form: β × (X - X̄)
+      mean_val <- mx[var_name]
+      if (!is.null(mean_val) && !is.na(mean_val)) {
+        var_term <- sprintf("(%s - %.2f)", var_name, mean_val)
+      } else {
+        var_term <- var_name
+      }
+    } else {
+      # Standardized form: β × X (already standardized)
+      var_term <- var_name
+    }
+    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", var_term)
   }
 
   # Interactions
@@ -558,8 +573,22 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
   for (i in seq_len(nrow(interactions))) {
     coef <- interactions$coefficient[i]
     sign <- if (coef > 0) " + " else " - "
-    term <- paste0(interactions$var1[i], " × ", interactions$var2[i])
-    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × (", term, ")")
+    v1 <- interactions$var1[i]
+    v2 <- interactions$var2[i]
+
+    if (scale == "original" && !is.null(mx)) {
+      # Centered form: θ × (Xi - X̄i)(Xj - X̄j)
+      m1 <- mx[v1]
+      m2 <- mx[v2]
+      if (!is.null(m1) && !is.na(m1) && !is.null(m2) && !is.na(m2)) {
+        term <- sprintf("(%s - %.2f)(%s - %.2f)", v1, m1, v2, m2)
+      } else {
+        term <- paste0(v1, " × ", v2)
+      }
+    } else {
+      term <- paste0(v1, " × ", v2)
+    }
+    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", term)
   }
 
   paste0(target_name, " = ", terms)
@@ -866,24 +895,11 @@ run_hiernet_analysis <- function(
     }
   )
 
-  # Calculate intercept for original scale coefficients
-  # y = intercept + sum(beta_orig * X) + sum(th_orig * X_i * X_j)
-  # From centered form: y - mean(y) = sum(beta_std * (X - mx)/sx) + interactions
-  # So: intercept = mean(y) - sum(beta_orig * mx) - sum(th_orig * mx_i * mx_j)
+  # Calculate intercepts
+  # For centered form: y = mean(y) + sum(beta * (X - mean(X))) + sum(th * (Xi - mean(Xi))(Xj - mean(Xj)))
+  # At X = mean(X), all centered terms are 0, so intercept = mean(y)
   mean_y <- mean(y, na.rm = TRUE)
-  intercept_orig <- mean_y - sum(main_effects_orig * mx)
-
-  # Subtract interaction contribution at means
-  for (i in seq_len(ncol(X))) {
-    for (j in seq_len(ncol(X))) {
-      if (i != j && abs(interaction_matrix_orig[i, j]) > .Machine$double.eps) {
-        intercept_orig <- intercept_orig - interaction_matrix_orig[i, j] * mx[i] * mx[j] / 2
-      }
-    }
-  }
-  if (is.na(intercept_orig)) intercept_orig <- 0
-
-  # Intercept for standardized coefficients is 0 (centered data)
+  intercept_orig <- mean_y
   intercept_std <- mean_y
 
   list(
@@ -1512,7 +1528,7 @@ server <- function(input, output, session) {
   output$scale_description <- renderUI({
     scale <- input$coef_scale %||% "original"
     if (scale == "original") {
-      "元単位: 予測式として使用可能。変数1単位あたりの効果を表す。"
+      "元単位: 中心化形式 β×(X-X̄)。変数1単位あたりの効果。切片=mean(y)。"
     } else {
       "標準化: 変数間の相対的重要度を比較可能。1SD変化あたりの効果を表す。"
     }
@@ -1543,7 +1559,9 @@ server <- function(input, output, session) {
       main_effects,
       interaction_matrix,
       res$var_names,
-      input$target_var
+      input$target_var,
+      scale = scale,
+      mx = res$mx
     )
     HTML(equation)
   })
