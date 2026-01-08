@@ -546,29 +546,17 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
                           scale = "original", mx = NULL) {
   terms <- sprintf("%.4f", intercept)
 
-  # Main effects (vectorized filter)
+  # Main effects (NOT centered for original scale)
   active_main <- abs(main_effects) > DISPLAY_THRESHOLD
   for (i in which(active_main)) {
     coef <- main_effects[i]
     sign <- if (coef > 0) " + " else " - "
     var_name <- names(main_effects)[i]
-
-    if (scale == "original" && !is.null(mx)) {
-      # Centered form: β × (X - X̄)
-      mean_val <- mx[var_name]
-      if (!is.null(mean_val) && !is.na(mean_val)) {
-        var_term <- sprintf("(%s - %.2f)", var_name, mean_val)
-      } else {
-        var_term <- var_name
-      }
-    } else {
-      # Standardized form: β × X (already standardized)
-      var_term <- var_name
-    }
-    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", var_term)
+    # Main effects: always just β × X (no centering)
+    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", var_name)
   }
 
-  # Interactions
+  # Interactions (centered for original scale only)
   interactions <- extract_interactions(int_mat, var_names, DISPLAY_THRESHOLD)
   for (i in seq_len(nrow(interactions))) {
     coef <- interactions$coefficient[i]
@@ -577,7 +565,7 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
     v2 <- interactions$var2[i]
 
     if (scale == "original" && !is.null(mx)) {
-      # Centered form: θ × (Xi - X̄i)(Xj - X̄j)
+      # Centered form for interactions: θ × (Xi - X̄i)(Xj - X̄j)
       m1 <- mx[v1]
       m2 <- mx[v2]
       if (!is.null(m1) && !is.na(m1) && !is.null(m2) && !is.na(m2)) {
@@ -586,6 +574,7 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
         term <- paste0(v1, " × ", v2)
       }
     } else {
+      # Standardized: just Xi × Xj
       term <- paste0(v1, " × ", v2)
     }
     terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", term)
@@ -896,10 +885,15 @@ run_hiernet_analysis <- function(
   )
 
   # Calculate intercepts
-  # For centered form: y = mean(y) + sum(beta * (X - mean(X))) + sum(th * (Xi - mean(Xi))(Xj - mean(Xj)))
-  # At X = mean(X), all centered terms are 0, so intercept = mean(y)
+  # Original scale form: y = intercept + β×X + θ×(Xi - X̄i)(Xj - X̄j)
+  # Main effects are NOT centered, interactions ARE centered
+  # intercept = mean(y) - Σ(β_orig × mean(X))
+  # (interaction terms are 0 at means since they're centered)
   mean_y <- mean(y, na.rm = TRUE)
-  intercept_orig <- mean_y
+  intercept_orig <- mean_y - sum(main_effects_orig * mx)
+  if (is.na(intercept_orig)) intercept_orig <- 0
+
+  # Standardized: all terms centered, intercept = mean(y)
   intercept_std <- mean_y
 
   list(
@@ -1528,7 +1522,7 @@ server <- function(input, output, session) {
   output$scale_description <- renderUI({
     scale <- input$coef_scale %||% "original"
     if (scale == "original") {
-      "元単位: 中心化形式 β×(X-X̄)。変数1単位あたりの効果。切片=mean(y)。"
+      "元単位: 主効果β×X、交互作用θ×(Xi-X̄i)(Xj-X̄j)。予測式として使用可能。"
     } else {
       "標準化: 変数間の相対的重要度を比較可能。1SD変化あたりの効果を表す。"
     }
