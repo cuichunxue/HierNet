@@ -515,11 +515,11 @@ extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHO
   )
 
   n <- nrow(int_mat)
-  if (is.null(n) || n < 2) return(empty_result)
+  if (is.null(n) || n < 1) return(empty_result)
 
-  # Get upper triangle indices
-  idx <- which(upper.tri(int_mat), arr.ind = TRUE)
-  coefficients <- int_mat[upper.tri(int_mat)]
+  # Get upper triangle indices INCLUDING diagonal (for quadratic terms)
+  idx <- which(upper.tri(int_mat, diag = TRUE), arr.ind = TRUE)
+  coefficients <- int_mat[upper.tri(int_mat, diag = TRUE)]
 
   # Filter by threshold
   keep <- abs(coefficients) > threshold
@@ -556,7 +556,7 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
     terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", var_name)
   }
 
-  # Interactions (centered for original scale only)
+  # Interactions and quadratic terms (centered for original scale only)
   interactions <- extract_interactions(int_mat, var_names, DISPLAY_THRESHOLD)
   for (i in seq_len(nrow(interactions))) {
     coef <- interactions$coefficient[i]
@@ -564,18 +564,33 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
     v1 <- interactions$var1[i]
     v2 <- interactions$var2[i]
 
+    is_quadratic <- (v1 == v2)
+
     if (scale == "original" && !is.null(mx)) {
-      # Centered form for interactions: θ × (Xi - X̄i)(Xj - X̄j)
       m1 <- mx[v1]
-      m2 <- mx[v2]
-      if (!is.null(m1) && !is.na(m1) && !is.null(m2) && !is.na(m2)) {
-        term <- sprintf("(%s - %.2f)(%s - %.2f)", v1, m1, v2, m2)
+      if (is_quadratic) {
+        # Quadratic term: θ × (X - X̄)²
+        if (!is.null(m1) && !is.na(m1)) {
+          term <- sprintf("(%s - %.2f)²", v1, m1)
+        } else {
+          term <- paste0(v1, "²")
+        }
+      } else {
+        # Interaction term: θ × (Xi - X̄i)(Xj - X̄j)
+        m2 <- mx[v2]
+        if (!is.null(m1) && !is.na(m1) && !is.null(m2) && !is.na(m2)) {
+          term <- sprintf("(%s - %.2f)(%s - %.2f)", v1, m1, v2, m2)
+        } else {
+          term <- paste0(v1, " × ", v2)
+        }
+      }
+    } else {
+      # Standardized
+      if (is_quadratic) {
+        term <- paste0(v1, "²")
       } else {
         term <- paste0(v1, " × ", v2)
       }
-    } else {
-      # Standardized: just Xi × Xj
-      term <- paste0(v1, " × ", v2)
     }
     terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", term)
   }
@@ -1591,10 +1606,14 @@ server <- function(input, output, session) {
     interactions <- extract_interactions(interaction_matrix, res$var_names, 0)
 
     if (nrow(interactions) > 0) {
+      # Distinguish between quadratic (var1 == var2) and interaction (var1 != var2)
+      is_quadratic <- interactions$var1 == interactions$var2
       int_df <- data.frame(
-        変数 = paste0(interactions$var1, " × ", interactions$var2),
+        変数 = ifelse(is_quadratic,
+                     paste0(interactions$var1, "²"),
+                     paste0(interactions$var1, " × ", interactions$var2)),
         係数 = interactions$coefficient,
-        タイプ = "交互作用",
+        タイプ = ifelse(is_quadratic, "2次項", "交互作用"),
         選択 = ifelse(abs(interactions$coefficient) > DISPLAY_THRESHOLD, "✓", ""),
         stringsAsFactors = FALSE
       )
@@ -1617,7 +1636,8 @@ server <- function(input, output, session) {
       formatStyle(columns = "選択", color = COLORS$accent_green, fontWeight = "bold") |>
       formatStyle(
         columns = "タイプ",
-        color = styleEqual(c("主効果", "交互作用"), c(COLORS$accent_blue, COLORS$accent_purple))
+        color = styleEqual(c("主効果", "交互作用", "2次項"),
+                          c(COLORS$accent_blue, COLORS$accent_purple, COLORS$accent_orange))
       )
   })
 
@@ -1863,24 +1883,39 @@ server <- function(input, output, session) {
 
     if (nrow(int_df) == 0) {
       return(datatable(
-        data.frame(メッセージ = "選択された交互作用はありません"),
+        data.frame(メッセージ = "選択された交互作用・2次項はありません"),
         options = list(dom = "t"),
         rownames = FALSE
       ))
     }
 
+    # Add type column (quadratic vs interaction)
+    is_quadratic <- int_df$var1 == int_df$var2
+    int_df$タイプ <- ifelse(is_quadratic, "2次項", "交互作用")
+
+    # Format variable display
+    int_df$項 <- ifelse(is_quadratic,
+                       paste0(int_df$var1, "²"),
+                       paste0(int_df$var1, " × ", int_df$var2))
+
     col_name <- if (scale == "original") "係数(元単位)" else "係数(標準化)"
-    names(int_df) <- c("変数1", "変数2", col_name)
+    result_df <- data.frame(
+      項 = int_df$項,
+      タイプ = int_df$タイプ,
+      係数 = int_df$coefficient,
+      stringsAsFactors = FALSE
+    )
+    names(result_df)[3] <- col_name
 
     datatable(
-      int_df,
+      result_df,
       options = list(pageLength = 10, dom = "t", ordering = FALSE),
       rownames = FALSE
     ) |>
-      formatRound(columns = "交互作用係数", digits = 4) |>
+      formatRound(columns = col_name, digits = 4) |>
       formatStyle(
-        columns = "交互作用係数",
-        color = styleInterval(0, c(COLORS$accent_red, COLORS$accent_purple))
+        columns = "タイプ",
+        color = styleEqual(c("交互作用", "2次項"), c(COLORS$accent_purple, COLORS$accent_orange))
       )
   })
 }
