@@ -206,6 +206,41 @@ body {
 
 .btn-analysis:active { transform: translateY(0); }
 
+/* Inline radio buttons for scale toggle */
+.card-header .shiny-input-radiogroup {
+  margin: 0;
+}
+
+.card-header .shiny-input-radiogroup .shiny-options-group {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.card-header .shiny-input-radiogroup label.radio-inline {
+  padding: 0.25rem 0.75rem;
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: %s;
+  border: 1px solid %s;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.card-header .shiny-input-radiogroup label.radio-inline:hover {
+  border-color: %s;
+}
+
+.card-header .shiny-input-radiogroup input[type='radio']:checked + span {
+  color: %s;
+}
+
+.card-header .shiny-input-radiogroup label.radio-inline:has(input:checked) {
+  background: %s;
+  border-color: %s;
+}
+
 /* Result section */
 .result-section {
   background: linear-gradient(135deg, %s 0%%, %s 100%%);
@@ -383,6 +418,9 @@ table.dataTable tbody tr:hover td { background: %s !important; }
   COLORS$bg_primary, COLORS$border, COLORS$text_primary, COLORS$accent_blue,
   COLORS$bg_secondary, COLORS$border, COLORS$text_primary,
   COLORS$bg_tertiary, COLORS$accent_blue,
+  # Radio button scale toggle
+  COLORS$bg_tertiary, COLORS$border, COLORS$accent_blue,
+  COLORS$accent_blue, COLORS$accent_blue, COLORS$accent_blue,
   COLORS$bg_secondary, COLORS$bg_primary, COLORS$border,
   COLORS$bg_primary, COLORS$border, COLORS$link_blue,
   COLORS$bg_tertiary, COLORS$bg_secondary, COLORS$border, COLORS$accent_blue,
@@ -781,21 +819,43 @@ run_hiernet_analysis <- function(
     stop("モデルフィッティングの結果が不正です")
   }
 
-  # Extract coefficients
-  main_effects <- final_fit$bp - final_fit$bn
-  names(main_effects) <- colnames(X)
+  # Extract scaling info from hierNet fit
+  mx <- final_fit$mx  # column means
+  sx <- final_fit$sx  # column standard deviations
 
-  interaction_matrix <- final_fit$th
-  if (!is.null(interaction_matrix)) {
-    rownames(interaction_matrix) <- colnames(X)
-    colnames(interaction_matrix) <- colnames(X)
-  } else {
-    # Create zero matrix if th is NULL
-    p <- ncol(X)
-    interaction_matrix <- matrix(0, nrow = p, ncol = p)
-    rownames(interaction_matrix) <- colnames(X)
-    colnames(interaction_matrix) <- colnames(X)
+  # If sx is NULL or missing, compute from data
+  if (is.null(sx) || length(sx) == 0) {
+    sx <- apply(X, 2, sd, na.rm = TRUE)
+    sx[sx < .Machine$double.eps] <- 1  # Avoid division by zero
   }
+  if (is.null(mx) || length(mx) == 0) {
+    mx <- colMeans(X, na.rm = TRUE)
+  }
+
+  # Extract standardized coefficients (hierNet returns these)
+  main_effects_std <- final_fit$bp - final_fit$bn
+  names(main_effects_std) <- colnames(X)
+
+  # Convert to original scale: beta_orig = beta_std / sx
+  main_effects_orig <- main_effects_std / sx
+  names(main_effects_orig) <- colnames(X)
+
+  # Interaction matrix (standardized)
+  interaction_matrix_std <- final_fit$th
+  if (!is.null(interaction_matrix_std)) {
+    rownames(interaction_matrix_std) <- colnames(X)
+    colnames(interaction_matrix_std) <- colnames(X)
+  } else {
+    p <- ncol(X)
+    interaction_matrix_std <- matrix(0, nrow = p, ncol = p)
+    rownames(interaction_matrix_std) <- colnames(X)
+    colnames(interaction_matrix_std) <- colnames(X)
+  }
+
+  # Interaction matrix (original scale): th_orig[i,j] = th_std[i,j] / (sx[i] * sx[j])
+  interaction_matrix_orig <- interaction_matrix_std / outer(sx, sx)
+  rownames(interaction_matrix_orig) <- colnames(X)
+  colnames(interaction_matrix_orig) <- colnames(X)
 
   # Compute predictions
   predictions <- tryCatch(
@@ -806,21 +866,47 @@ run_hiernet_analysis <- function(
     }
   )
 
-  # Estimate intercept (for display purposes)
-  # Note: hierNet internally handles centering, so we reconstruct for interpretation
-  col_means <- colMeans(X, na.rm = TRUE)
-  intercept <- mean(y, na.rm = TRUE) - sum(col_means * main_effects)
-  if (is.na(intercept)) intercept <- 0
+  # Calculate intercept for original scale coefficients
+  # y = intercept + sum(beta_orig * X) + sum(th_orig * X_i * X_j)
+  # From centered form: y - mean(y) = sum(beta_std * (X - mx)/sx) + interactions
+  # So: intercept = mean(y) - sum(beta_orig * mx) - sum(th_orig * mx_i * mx_j)
+  mean_y <- mean(y, na.rm = TRUE)
+  intercept_orig <- mean_y - sum(main_effects_orig * mx)
+
+  # Subtract interaction contribution at means
+  for (i in seq_len(ncol(X))) {
+    for (j in seq_len(ncol(X))) {
+      if (i != j && abs(interaction_matrix_orig[i, j]) > .Machine$double.eps) {
+        intercept_orig <- intercept_orig - interaction_matrix_orig[i, j] * mx[i] * mx[j] / 2
+      }
+    }
+  }
+  if (is.na(intercept_orig)) intercept_orig <- 0
+
+  # Intercept for standardized coefficients is 0 (centered data)
+  intercept_std <- mean_y
 
   list(
     fit = final_fit,
     cv_fit = cv_fit,
     path_fit = path_fit,
     best_lambda = best_lambda,
-    main_effects = main_effects,
-    interaction_matrix = interaction_matrix,
+    # Standardized coefficients
+    main_effects_std = main_effects_std,
+    interaction_matrix_std = interaction_matrix_std,
+    intercept_std = intercept_std,
+    # Original scale coefficients
+    main_effects_orig = main_effects_orig,
+    interaction_matrix_orig = interaction_matrix_orig,
+    intercept_orig = intercept_orig,
+    # Scaling info
+    mx = mx,
+    sx = sx,
+    # Legacy compatibility (default to standardized)
+    main_effects = main_effects_std,
+    interaction_matrix = interaction_matrix_std,
     predictions = predictions,
-    intercept = intercept
+    intercept = intercept_orig
   )
 }
 
@@ -1029,8 +1115,23 @@ ui <- fluidPage(
               ),
               div(
                 class = "result-section",
-                div(class = "card-header", "回帰式"),
-                div(class = "equation-display", uiOutput("equation_display"))
+                div(
+                  class = "card-header",
+                  style = "display: flex; justify-content: space-between; align-items: center;",
+                  span("回帰式・係数"),
+                  radioButtons(
+                    "coef_scale",
+                    label = NULL,
+                    choices = c("元単位" = "original", "標準化" = "standardized"),
+                    selected = "original",
+                    inline = TRUE
+                  )
+                ),
+                div(class = "equation-display", uiOutput("equation_display")),
+                p(
+                  style = sprintf("color: %s; font-size: 0.75rem; margin: 0.5rem 0;", COLORS$text_muted),
+                  uiOutput("scale_description")
+                )
               ),
               div(
                 class = "result-section",
@@ -1405,16 +1506,42 @@ server <- function(input, output, session) {
   })
 
   # -------------------------------------------------------------------------
+  # Scale description
+  # -------------------------------------------------------------------------
+
+  output$scale_description <- renderUI({
+    scale <- input$coef_scale %||% "original"
+    if (scale == "original") {
+      "元単位: 予測式として使用可能。変数1単位あたりの効果を表す。"
+    } else {
+      "標準化: 変数間の相対的重要度を比較可能。1SD変化あたりの効果を表す。"
+    }
+  })
+
+  # -------------------------------------------------------------------------
   # Equation display
   # -------------------------------------------------------------------------
 
   output$equation_display <- renderUI({
     req(rv$analysis)
     res <- rv$analysis
+    scale <- input$coef_scale %||% "original"
+
+    # Select coefficients based on scale
+    if (scale == "original") {
+      intercept <- res$intercept_orig
+      main_effects <- res$main_effects_orig
+      interaction_matrix <- res$interaction_matrix_orig
+    } else {
+      intercept <- res$intercept_std
+      main_effects <- res$main_effects_std
+      interaction_matrix <- res$interaction_matrix_std
+    }
+
     equation <- build_equation(
-      res$intercept,
-      res$main_effects,
-      res$interaction_matrix,
+      intercept,
+      main_effects,
+      interaction_matrix,
       res$var_names,
       input$target_var
     )
@@ -1428,18 +1555,28 @@ server <- function(input, output, session) {
   output$coef_table <- renderDT({
     req(rv$analysis)
     res <- rv$analysis
+    scale <- input$coef_scale %||% "original"
+
+    # Select coefficients based on scale
+    if (scale == "original") {
+      main_effects <- res$main_effects_orig
+      interaction_matrix <- res$interaction_matrix_orig
+    } else {
+      main_effects <- res$main_effects_std
+      interaction_matrix <- res$interaction_matrix_std
+    }
 
     # Main effects
     main_df <- data.frame(
-      変数 = names(res$main_effects),
-      係数 = res$main_effects,
+      変数 = names(main_effects),
+      係数 = main_effects,
       タイプ = "主効果",
-      選択 = ifelse(abs(res$main_effects) > DISPLAY_THRESHOLD, "✓", ""),
+      選択 = ifelse(abs(main_effects) > DISPLAY_THRESHOLD, "✓", ""),
       stringsAsFactors = FALSE
     )
 
     # Interactions (using utility function)
-    interactions <- extract_interactions(res$interaction_matrix, res$var_names, 0)
+    interactions <- extract_interactions(interaction_matrix, res$var_names, 0)
 
     if (nrow(interactions) > 0) {
       int_df <- data.frame(
@@ -1633,10 +1770,15 @@ server <- function(input, output, session) {
   output$main_effect_plot <- renderPlotly({
     req(rv$analysis)
     res <- rv$analysis
+    scale <- input$coef_scale %||% "original"
+
+    # Select coefficients based on scale
+    main_effects <- if (scale == "original") res$main_effects_orig else res$main_effects_std
+    x_label <- if (scale == "original") "係数 (元単位)" else "係数 (標準化)"
 
     df <- data.frame(
-      variable = names(res$main_effects),
-      coefficient = res$main_effects,
+      variable = names(main_effects),
+      coefficient = main_effects,
       stringsAsFactors = FALSE
     ) |>
       dplyr::mutate(abs_coef = abs(coefficient)) |>
@@ -1647,7 +1789,7 @@ server <- function(input, output, session) {
       geom_col(aes(fill = coefficient > 0), alpha = 0.8, width = 0.7) +
       geom_vline(xintercept = 0, color = COLORS$border, linewidth = 0.5) +
       scale_fill_manual(values = c("TRUE" = COLORS$accent_green, "FALSE" = COLORS$accent_red), guide = "none") +
-      labs(x = "係数", y = "") +
+      labs(x = x_label, y = "") +
       theme_hiernet() +
       theme(panel.grid.major.y = element_blank(), axis.text = element_text(color = COLORS$text_primary, size = 11))
 
@@ -1661,9 +1803,12 @@ server <- function(input, output, session) {
   output$interaction_heatmap <- renderPlotly({
     req(rv$analysis)
     res <- rv$analysis
+    scale <- input$coef_scale %||% "original"
 
-    int_mat <- res$interaction_matrix
+    # Select coefficients based on scale
+    int_mat <- if (scale == "original") res$interaction_matrix_orig else res$interaction_matrix_std
     var_names <- res$var_names
+    legend_title <- if (scale == "original") "係数\n(元単位)" else "係数\n(標準化)"
 
     df <- expand.grid(var1 = var_names, var2 = var_names, stringsAsFactors = FALSE)
     df$value <- as.vector(int_mat)
@@ -1676,7 +1821,7 @@ server <- function(input, output, session) {
       ) +
       scale_fill_gradient2(
         low = COLORS$accent_red, mid = COLORS$bg_primary, high = COLORS$accent_purple,
-        midpoint = 0, name = "係数"
+        midpoint = 0, name = legend_title
       ) +
       labs(x = "", y = "") +
       theme_hiernet() +
@@ -1697,8 +1842,12 @@ server <- function(input, output, session) {
   output$interaction_table <- renderDT({
     req(rv$analysis)
     res <- rv$analysis
+    scale <- input$coef_scale %||% "original"
 
-    int_df <- extract_interactions(res$interaction_matrix, res$var_names, DISPLAY_THRESHOLD)
+    # Select coefficients based on scale
+    interaction_matrix <- if (scale == "original") res$interaction_matrix_orig else res$interaction_matrix_std
+
+    int_df <- extract_interactions(interaction_matrix, res$var_names, DISPLAY_THRESHOLD)
 
     if (nrow(int_df) == 0) {
       return(datatable(
@@ -1708,7 +1857,8 @@ server <- function(input, output, session) {
       ))
     }
 
-    names(int_df) <- c("変数1", "変数2", "交互作用係数")
+    col_name <- if (scale == "original") "係数(元単位)" else "係数(標準化)"
+    names(int_df) <- c("変数1", "変数2", col_name)
 
     datatable(
       int_df,
