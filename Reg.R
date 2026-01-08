@@ -567,18 +567,18 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
     is_quadratic <- (v1 == v2)
 
     if (scale == "original" && !is.null(mx)) {
-      m1 <- mx[v1]
+      m1 <- as.numeric(mx[v1])
       if (is_quadratic) {
         # Quadratic term: θ × (X - X̄)²
-        if (!is.null(m1) && !is.na(m1)) {
+        if (length(m1) > 0 && !is.na(m1)) {
           term <- sprintf("(%s - %.2f)²", v1, m1)
         } else {
           term <- paste0(v1, "²")
         }
       } else {
         # Interaction term: θ × (Xi - X̄i)(Xj - X̄j)
-        m2 <- mx[v2]
-        if (!is.null(m1) && !is.na(m1) && !is.null(m2) && !is.na(m2)) {
+        m2 <- as.numeric(mx[v2])
+        if (length(m1) > 0 && !is.na(m1) && length(m2) > 0 && !is.na(m2)) {
           term <- sprintf("(%s - %.2f)(%s - %.2f)", v1, m1, v2, m2)
         } else {
           term <- paste0(v1, " × ", v2)
@@ -1440,9 +1440,22 @@ server <- function(input, output, session) {
           X = X,
           var_names = colnames(X),
           predictions = analysis_result$predictions,
+          # Original scale coefficients
+          intercept_orig = analysis_result$intercept_orig,
+          main_effects_orig = analysis_result$main_effects_orig,
+          interaction_matrix_orig = analysis_result$interaction_matrix_orig,
+          # Standardized coefficients
+          intercept_std = analysis_result$intercept_std,
+          main_effects_std = analysis_result$main_effects_std,
+          interaction_matrix_std = analysis_result$interaction_matrix_std,
+          # Scaling info
+          mx = analysis_result$mx,
+          sx = analysis_result$sx,
+          # Legacy fields
           intercept = analysis_result$intercept,
           main_effects = analysis_result$main_effects,
           interaction_matrix = analysis_result$interaction_matrix,
+          # Model info
           fit = analysis_result$fit,
           cv_fit = analysis_result$cv_fit,
           best_lambda = analysis_result$best_lambda,
@@ -1552,16 +1565,20 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale
+    # Select coefficients based on scale (with fallback)
     if (scale == "original") {
-      intercept <- res$intercept_orig
-      main_effects <- res$main_effects_orig
-      interaction_matrix <- res$interaction_matrix_orig
+      intercept <- res$intercept_orig %||% res$intercept %||% 0
+      main_effects <- res$main_effects_orig %||% res$main_effects
+      interaction_matrix <- res$interaction_matrix_orig %||% res$interaction_matrix
     } else {
-      intercept <- res$intercept_std
-      main_effects <- res$main_effects_std
-      interaction_matrix <- res$interaction_matrix_std
+      intercept <- res$intercept_std %||% res$intercept %||% 0
+      main_effects <- res$main_effects_std %||% res$main_effects
+      interaction_matrix <- res$interaction_matrix_std %||% res$interaction_matrix
     }
+
+    # Ensure intercept is numeric
+    intercept <- as.numeric(intercept)
+    if (is.na(intercept)) intercept <- 0
 
     equation <- build_equation(
       intercept,
@@ -1584,14 +1601,18 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale
+    # Select coefficients based on scale (with fallback)
     if (scale == "original") {
-      main_effects <- res$main_effects_orig
-      interaction_matrix <- res$interaction_matrix_orig
+      main_effects <- res$main_effects_orig %||% res$main_effects
+      interaction_matrix <- res$interaction_matrix_orig %||% res$interaction_matrix
     } else {
-      main_effects <- res$main_effects_std
-      interaction_matrix <- res$interaction_matrix_std
+      main_effects <- res$main_effects_std %||% res$main_effects
+      interaction_matrix <- res$interaction_matrix_std %||% res$interaction_matrix
     }
+
+    # Ensure numeric
+    main_effects <- as.numeric(main_effects)
+    names(main_effects) <- res$var_names
 
     # Main effects
     main_df <- data.frame(
@@ -1804,13 +1825,21 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale
-    main_effects <- if (scale == "original") res$main_effects_orig else res$main_effects_std
+    # Select coefficients based on scale (with fallback)
+    if (scale == "original") {
+      main_effects <- res$main_effects_orig %||% res$main_effects
+    } else {
+      main_effects <- res$main_effects_std %||% res$main_effects
+    }
     x_label <- if (scale == "original") "係数 (元単位)" else "係数 (標準化)"
 
+    # Ensure numeric and named
+    coef_values <- as.numeric(main_effects)
+    var_names <- names(main_effects) %||% res$var_names
+
     df <- data.frame(
-      variable = names(main_effects),
-      coefficient = main_effects,
+      variable = var_names,
+      coefficient = coef_values,
       stringsAsFactors = FALSE
     ) |>
       dplyr::mutate(abs_coef = abs(coefficient)) |>
@@ -1837,18 +1866,28 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale
-    int_mat <- if (scale == "original") res$interaction_matrix_orig else res$interaction_matrix_std
+    # Select coefficients based on scale (with fallback)
+    if (scale == "original") {
+      int_mat <- res$interaction_matrix_orig %||% res$interaction_matrix
+    } else {
+      int_mat <- res$interaction_matrix_std %||% res$interaction_matrix
+    }
     var_names <- res$var_names
     legend_title <- if (scale == "original") "係数\n(元単位)" else "係数\n(標準化)"
 
-    df <- expand.grid(var1 = var_names, var2 = var_names, stringsAsFactors = FALSE)
-    df$value <- as.vector(int_mat)
+    # Validate matrix
+    if (is.null(int_mat) || !is.matrix(int_mat)) {
+      p <- ncol(res$X) %||% length(var_names)
+      int_mat <- matrix(0, nrow = p, ncol = p)
+    }
 
-    p <- ggplot(df, aes(x = var1, y = var2, fill = value)) +
+    df <- expand.grid(var1 = var_names, var2 = var_names, stringsAsFactors = FALSE)
+    df$coef_value <- as.numeric(as.vector(int_mat))
+
+    p <- ggplot(df, aes(x = var1, y = var2, fill = coef_value)) +
       geom_tile(color = COLORS$bg_tertiary, linewidth = 0.5) +
       geom_text(
-        aes(label = ifelse(abs(value) > DISPLAY_THRESHOLD, sprintf("%.2f", value), "")),
+        aes(label = ifelse(abs(coef_value) > DISPLAY_THRESHOLD, sprintf("%.2f", coef_value), "")),
         color = COLORS$text_primary, size = 3
       ) +
       scale_fill_gradient2(
@@ -1876,8 +1915,12 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale
-    interaction_matrix <- if (scale == "original") res$interaction_matrix_orig else res$interaction_matrix_std
+    # Select coefficients based on scale (with fallback)
+    if (scale == "original") {
+      interaction_matrix <- res$interaction_matrix_orig %||% res$interaction_matrix
+    } else {
+      interaction_matrix <- res$interaction_matrix_std %||% res$interaction_matrix
+    }
 
     int_df <- extract_interactions(interaction_matrix, res$var_names, DISPLAY_THRESHOLD)
 
