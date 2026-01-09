@@ -391,19 +391,6 @@ table.dataTable tbody tr:hover td { background: %s !important; }
   margin-bottom: 0.5rem;
 }
 
-/* Info box */
-.hiernet-info {
-  background: rgba(56, 139, 253, 0.1);
-  border: 1px solid %s;
-  border-radius: 8px;
-  padding: 1rem;
-  margin-bottom: 1rem;
-  font-size: 0.85rem;
-  color: %s;
-}
-
-.hiernet-info strong { color: %s; }
-
 /* Responsive */
 @media (max-width: 768px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
@@ -432,7 +419,7 @@ table.dataTable tbody tr:hover td { background: %s !important; }
   COLORS$bg_primary, COLORS$border,
   COLORS$bg_primary, COLORS$border, COLORS$border,
   COLORS$text_muted, COLORS$text_primary, COLORS$accent_blue, COLORS$accent_blue,
-  COLORS$text_muted, COLORS$info_blue, COLORS$link_blue, COLORS$accent_blue
+  COLORS$text_muted
 )
 
 # ============================================================================
@@ -970,142 +957,124 @@ ui <- fluidPage(
   div(
     class = "container-fluid",
     fluidRow(
-      # Left panel - Controls
+      # Left panel - Controls (with tabs)
       column(
         4,
+        tabsetPanel(
+          type = "tabs",
+          id = "settings_tabs",
 
-        # hierNet explanation
-        div(
-          class = "hiernet-info",
-          tags$strong("hierNetとは？"), tags$br(),
-          "交互作用項 X₁×X₂ がモデルに選択されるには、",
-          "主効果 X₁ と X₂ が先に選択されている必要があるという",
-          tags$strong("階層制約（hierarchy constraint）"),
-          "を課したLASSO回帰です。", tags$br(), tags$br(),
-          tags$strong("Strong hierarchy:"), " 両方の主効果が必要", tags$br(),
-          tags$strong("Weak hierarchy:"), " 少なくとも一方の主効果が必要"
-        ),
+          # Data settings tab
+          tabPanel(
+            title = "データ設定",
+            value = "data_settings",
+            div(
+              style = "margin-top: 1rem;",
 
-        # Data input
-        div(
-          class = "analysis-card",
-          div(class = "card-header", "データ入力"),
-          tabsetPanel(
-            id = "data_input_mode",
-            type = "pills",
-            tabPanel(
-              title = "CSVファイル",
-              value = "csv",
-              br(),
-              fileInput(
-                "data_file",
-                label = "CSVファイルをアップロード",
-                accept = c(".csv", ".CSV"),
-                buttonLabel = "選択",
-                placeholder = "ファイル未選択"
+              # Data input
+              div(
+                class = "analysis-card",
+                div(class = "card-header", "データ入力"),
+                tabsetPanel(
+                  id = "data_input_mode",
+                  type = "pills",
+                  tabPanel(
+                    title = "CSVファイル",
+                    value = "csv",
+                    br(),
+                    fileInput(
+                      "data_file",
+                      label = "CSVファイルをアップロード",
+                      accept = c(".csv", ".CSV"),
+                      buttonLabel = "選択",
+                      placeholder = "ファイル未選択"
+                    ),
+                    selectInput(
+                      "encoding", "文字エンコーディング",
+                      choices = c("UTF-8" = "UTF-8", "Shift-JIS" = "CP932", "EUC-JP" = "EUC-JP"),
+                      selected = "UTF-8"
+                    )
+                  ),
+                  tabPanel(
+                    title = "表データ貼り付け",
+                    value = "paste",
+                    br(),
+                    textAreaInput(
+                      "data_paste",
+                      label = "表データを貼り付け（CSV または タブ区切り）",
+                      placeholder = "例：\n品質スコア,温度,圧力,速度\n80,0.12,-0.55,1.02",
+                      rows = 6
+                    )
+                  )
+                ),
+                hr(style = sprintf("border-color: %s;", COLORS$border)),
+                checkboxInput("header", "1行目をヘッダー行として扱う", value = TRUE)
               ),
-              selectInput(
-                "encoding", "文字エンコーディング",
-                choices = c("UTF-8" = "UTF-8", "Shift-JIS" = "CP932", "EUC-JP" = "EUC-JP"),
-                selected = "UTF-8"
+
+              # Variable selection
+              div(
+                class = "analysis-card",
+                div(class = "card-header", "変数設定"),
+                selectInput("target_var", label = "目的変数 (Y)", choices = NULL),
+                selectInput("explanatory_vars", label = "説明変数 (X)", choices = NULL, multiple = TRUE),
+                p(
+                  style = sprintf("color: %s; font-size: 0.8rem;", COLORS$accent_orange),
+                  "変数は10個以下を推奨"
+                )
               ),
-              p(
-                style = sprintf("color: %s; font-size: 0.8rem;", COLORS$text_muted),
-                "※ 日本語を含むExcel出力CSVは Shift-JIS のことが多いです。"
-              )
-            ),
-            tabPanel(
-              title = "表データ貼り付け",
-              value = "paste",
-              br(),
-              textAreaInput(
-                "data_paste",
-                label = "表データを貼り付け（CSV または タブ区切り）",
-                placeholder = "例：\n品質スコア,温度,圧力,速度\n80,0.12,-0.55,1.02\n79,-0.23,0.11,0.87",
-                rows = 8
-              ),
-              p(
-                style = sprintf("color: %s; font-size: 0.8rem;", COLORS$text_muted),
-                "・1行目に列名を書いてください。", tags$br(),
-                "・区切り文字は「カンマ ,」か「タブ \\t」のどちらでもOKです。"
+
+              # Sample data pattern
+              div(
+                class = "analysis-card",
+                div(class = "card-header", "サンプルデータ"),
+                selectInput(
+                  "sample_pattern",
+                  "パターン選択（データ未指定時に使用）",
+                  choices = c(
+                    "主効果のみ" = "main_linear",
+                    "強い交互作用" = "strong_interact",
+                    "弱い階層の交互作用" = "weak_interact",
+                    "二次モデル" = "quadratic",
+                    "低寄与・ほぼノイズ" = "low_signal_noise"
+                  ),
+                  selected = "strong_interact"
+                )
               )
             )
           ),
-          hr(style = sprintf("border-color: %s;", COLORS$border)),
-          checkboxInput("header", "1行目をヘッダー行として扱う", value = TRUE),
-          hr(style = sprintf("border-color: %s;", COLORS$border)),
-          p(
-            style = sprintf("color: %s; font-size: 0.85rem;", COLORS$text_muted),
-            "CSV/貼り付けを指定しない場合は、下のサンプルパターンに従ってデータが自動生成されます。"
-          )
-        ),
 
-        # Variable selection
-        div(
-          class = "analysis-card",
-          div(class = "card-header", "変数設定"),
-          selectInput("target_var", label = "目的変数 (Y)", choices = NULL),
-          selectInput("explanatory_vars", label = "説明変数 (X)", choices = NULL, multiple = TRUE),
-          p(
-            style = sprintf("color: %s; font-size: 0.8rem; margin-top: 0.5rem;", COLORS$accent_orange),
-            "hierNetは変数の全ペア交互作用を計算するため、変数は10個以下を推奨"
+          # Model settings tab
+          tabPanel(
+            title = "モデル設定",
+            value = "model_settings",
+            div(
+              style = "margin-top: 1rem;",
+              div(
+                class = "analysis-card",
+                div(class = "card-header", "hierNetパラメータ"),
+                selectInput(
+                  "model_type",
+                  "モデルタイプ",
+                  choices = c(
+                    "交互作用モデル" = "interaction",
+                    "二次モデル" = "quadratic"
+                  ),
+                  selected = "interaction"
+                ),
+                hr(style = sprintf("border-color: %s;", COLORS$border)),
+                selectInput(
+                  "hierarchy_type",
+                  "階層制約タイプ",
+                  choices = c("Strong hierarchy" = "strong", "Weak hierarchy" = "weak"),
+                  selected = "strong"
+                ),
+                hr(style = sprintf("border-color: %s;", COLORS$border)),
+                sliderInput("nlam", "Lambda候補数", min = 10, max = 50, value = 20, step = 5),
+                sliderInput("nfolds", "交差検証フォールド数", min = 3, max = 10, value = 5, step = 1),
+                actionButton("run_analysis", "分析実行", class = "btn-analysis", icon = icon("play"))
+              )
+            )
           )
-        ),
-
-        # Sample data pattern
-        div(
-          class = "analysis-card",
-          div(class = "card-header", "サンプルデータパターン"),
-          selectInput(
-            "sample_pattern",
-            "サンプルデータ選択（CSV/コピペが無いときに使用）",
-            choices = c(
-              "主効果のみ（main_linear）" = "main_linear",
-              "強い交互作用（strong_interact）" = "strong_interact",
-              "弱い階層の交互作用（weak_interact）" = "weak_interact",
-              "二次モデル（quadratic）" = "quadratic",
-              "低寄与・ほぼノイズ（low_signal_noise）" = "low_signal_noise"
-            ),
-            selected = "strong_interact"
-          ),
-          p(
-            style = sprintf("color: %s; font-size: 0.8rem; margin-top: 0.5rem;", COLORS$text_muted),
-            "※ CSV/貼り付けが指定されていない場合のみ使用されます。"
-          )
-        ),
-
-        # Model parameters
-        div(
-          class = "analysis-card",
-          div(class = "card-header", "hierNetパラメータ"),
-          selectInput(
-            "model_type",
-            "モデルタイプ",
-            choices = c(
-              "交互作用モデル（主効果 + 交互作用）" = "interaction",
-              "二次モデル（主効果 + 二次項）" = "quadratic"
-            ),
-            selected = "interaction"
-          ),
-          p(
-            style = sprintf("color: %s; font-size: 0.8rem; margin-top: -0.5rem;", COLORS$text_muted),
-            "※ 解釈・表示用フラグ（将来ロジック分岐可能）"
-          ),
-          hr(style = sprintf("border-color: %s;", COLORS$border)),
-          selectInput(
-            "hierarchy_type",
-            "階層制約タイプ",
-            choices = c("Strong hierarchy" = "strong", "Weak hierarchy" = "weak"),
-            selected = "strong"
-          ),
-          p(
-            style = sprintf("color: %s; font-size: 0.8rem; margin-top: -0.5rem;", COLORS$text_muted),
-            "Strong: 交互作用には両主効果が必要"
-          ),
-          sliderInput("nlam", "Lambda候補数", min = 10, max = 50, value = 20, step = 5),
-          hr(style = sprintf("border-color: %s;", COLORS$border)),
-          sliderInput("nfolds", "交差検証フォールド数", min = 3, max = 10, value = 5, step = 1),
-          actionButton("run_analysis", "分析実行", class = "btn-analysis", icon = icon("play"))
         )
       ),
 
