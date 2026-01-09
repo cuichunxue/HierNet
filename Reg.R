@@ -1227,14 +1227,19 @@ server <- function(input, output, session) {
     # CSV mode
     if (mode == "csv" && !is.null(input$data_file)) {
       tryCatch({
-        read.csv(
+        df <- read.csv(
           input$data_file$datapath,
           header = isTRUE(input$header),
           fileEncoding = input$encoding %||% "UTF-8",
           stringsAsFactors = FALSE
         )
+        showNotification("CSVファイルを読み込みました", type = "message", duration = 3)
+        df
       }, error = function(e) {
-        showNotification(sprintf("CSV読み込みエラー: %s", e$message), type = "error")
+        showNotification(
+          sprintf("CSV読み込みエラー: %s（サンプルデータを使用します）", e$message),
+          type = "error", duration = 8
+        )
         generate_sample_data(pattern = pattern)
       })
     }
@@ -1244,15 +1249,20 @@ server <- function(input, output, session) {
       if (!is.null(txt) && nzchar(trimws(txt))) {
         sep <- if (grepl("\t", txt)) "\t" else ","
         tryCatch({
-          as.data.frame(read.table(
+          df <- as.data.frame(read.table(
             text = txt,
             sep = sep,
             header = isTRUE(input$header),
             stringsAsFactors = FALSE,
             check.names = FALSE
           ))
+          showNotification("貼り付けデータを読み込みました", type = "message", duration = 3)
+          df
         }, error = function(e) {
-          showNotification(sprintf("貼り付けデータの読み込みエラー: %s", e$message), type = "error")
+          showNotification(
+            sprintf("貼り付けデータの読み込みエラー: %s（サンプルデータを使用します）", e$message),
+            type = "error", duration = 8
+          )
           generate_sample_data(pattern = pattern)
         })
       } else {
@@ -1308,6 +1318,28 @@ server <- function(input, output, session) {
     )
   })
 
+  # Update explanatory variables when target changes (exclude target from choices)
+  observeEvent(input$target_var, {
+    req(rv$data)
+    numeric_cols <- names(rv$data)[vapply(rv$data, is.numeric, logical(1))]
+    explanatory_choices <- setdiff(numeric_cols, input$target_var)
+
+    # Keep current selections that are still valid
+    current_selected <- input$explanatory_vars
+    valid_selected <- intersect(current_selected, explanatory_choices)
+
+    # If no valid selections, select all available
+    if (length(valid_selected) == 0) {
+      valid_selected <- explanatory_choices
+    }
+
+    updateSelectInput(
+      session, "explanatory_vars",
+      choices = explanatory_choices,
+      selected = valid_selected
+    )
+  })
+
   # -------------------------------------------------------------------------
   # Data preview
   # -------------------------------------------------------------------------
@@ -1339,7 +1371,16 @@ server <- function(input, output, session) {
   observeEvent(input$run_analysis, {
     req(rv$data, input$target_var, input$explanatory_vars)
 
-    # Validation
+    # Validation: target must not be in explanatory variables
+    if (input$target_var %in% input$explanatory_vars) {
+      showNotification(
+        "目的変数と説明変数に同じ変数が選択されています",
+        type = "error"
+      )
+      return()
+    }
+
+    # Validation: minimum explanatory variables
     if (length(input$explanatory_vars) < MIN_EXPLANATORY_VARS) {
       showNotification(
         sprintf("hierNetには%d個以上の説明変数が必要です", MIN_EXPLANATORY_VARS),
@@ -1357,7 +1398,7 @@ server <- function(input, output, session) {
 
     withProgress(message = "hierNet分析実行中...", value = 0, {
       tryCatch({
-        incProgress(0.1, detail = "データ準備中")
+        incProgress(0.05, detail = "データ準備中")
 
         y <- rv$data[[input$target_var]]
         X <- as.matrix(rv$data[, input$explanatory_vars, drop = FALSE])
@@ -1379,7 +1420,7 @@ server <- function(input, output, session) {
         X <- validated$X
         y <- validated$y
 
-        incProgress(0.2, detail = "交差検証実行中（時間がかかります）")
+        incProgress(0.25, detail = "交差検証実行中（時間がかかります）")
 
         # Run analysis
         analysis_result <- run_hiernet_analysis(
@@ -1390,7 +1431,7 @@ server <- function(input, output, session) {
           nfolds = input$nfolds
         )
 
-        incProgress(0.3, detail = "評価指標計算中")
+        incProgress(0.40, detail = "評価指標計算中")
 
         # Compute metrics
         active_counts <- count_active_coefficients(
@@ -1401,7 +1442,7 @@ server <- function(input, output, session) {
         n_params <- active_counts$n_main + active_counts$n_interaction
         metrics <- compute_metrics(y, analysis_result$predictions, n_params)
 
-        incProgress(0.15, detail = "結果整理中")
+        incProgress(0.20, detail = "結果整理中")
 
         # Store results
         rv$analysis <- list(
@@ -1435,7 +1476,7 @@ server <- function(input, output, session) {
           model_type = input$model_type
         )
 
-        incProgress(0.05, detail = "完了")
+        incProgress(0.10, detail = "完了")
 
         updateTabsetPanel(session, "result_tabs", selected = "result_tab")
         showNotification(
@@ -1618,7 +1659,7 @@ server <- function(input, output, session) {
 
     datatable(
       coef_df,
-      options = list(pageLength = 15, dom = "frtip", ordering = FALSE),
+      options = list(pageLength = 15, dom = "frtip", ordering = TRUE),
       rownames = FALSE,
       selection = "none"
     ) |>
@@ -1921,7 +1962,7 @@ server <- function(input, output, session) {
 
     datatable(
       result_df,
-      options = list(pageLength = 10, dom = "t", ordering = FALSE),
+      options = list(pageLength = 10, dom = "t", ordering = TRUE),
       rownames = FALSE
     ) |>
       formatRound(columns = col_name, digits = 4) |>
