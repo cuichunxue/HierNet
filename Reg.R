@@ -531,23 +531,40 @@ extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHO
 #' @return Character string of equation
 build_equation <- function(intercept, main_effects, int_mat, var_names, target_name,
                           scale = "original", mx = NULL) {
-  terms <- sprintf("%.4f", intercept)
+  # For standardized scale, intercept is 0 (Y is centered), so don't display it
+  # For original scale, always show intercept
+  if (abs(intercept) < DISPLAY_THRESHOLD) {
+    terms <- ""
+    first_term <- TRUE
+  } else {
+    terms <- sprintf("%.4f", intercept)
+    first_term <- FALSE
+  }
 
   # Main effects (NOT centered for original scale)
   active_main <- abs(main_effects) > DISPLAY_THRESHOLD
   for (i in which(active_main)) {
     coef <- main_effects[i]
-    sign <- if (coef > 0) " + " else " - "
     var_name <- names(main_effects)[i]
     # Main effects: always just β × X (no centering)
-    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", var_name)
+    if (first_term) {
+      # First term: no leading sign for positive, "-" for negative
+      if (coef < 0) {
+        terms <- paste0("-", sprintf("%.4f", abs(coef)), " × ", var_name)
+      } else {
+        terms <- paste0(sprintf("%.4f", coef), " × ", var_name)
+      }
+      first_term <- FALSE
+    } else {
+      sign <- if (coef > 0) " + " else " - "
+      terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", var_name)
+    }
   }
 
   # Interactions and quadratic terms (centered for original scale only)
   interactions <- extract_interactions(int_mat, var_names, DISPLAY_THRESHOLD)
   for (i in seq_len(nrow(interactions))) {
     coef <- interactions$coefficient[i]
-    sign <- if (coef > 0) " + " else " - "
     v1 <- interactions$var1[i]
     v2 <- interactions$var2[i]
 
@@ -579,7 +596,23 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
         term <- paste0(v1, " × ", v2)
       }
     }
-    terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", term)
+
+    if (first_term) {
+      if (coef < 0) {
+        terms <- paste0("-", sprintf("%.4f", abs(coef)), " × ", term)
+      } else {
+        terms <- paste0(sprintf("%.4f", coef), " × ", term)
+      }
+      first_term <- FALSE
+    } else {
+      sign <- if (coef > 0) " + " else " - "
+      terms <- paste0(terms, sign, sprintf("%.4f", abs(coef)), " × ", term)
+    }
+  }
+
+  # Handle edge case: no terms selected
+  if (terms == "") {
+    terms <- "0"
   }
 
   paste0(target_name, " = ", terms)
@@ -895,8 +928,8 @@ run_hiernet_analysis <- function(
   intercept_orig <- mean_y - sum(main_effects_orig * mx)
   if (is.na(intercept_orig)) intercept_orig <- 0
 
-  # Standardized: all terms centered, intercept = mean(y)
-  intercept_std <- mean_y
+  # Standardized: Y is centered (mean=0), so intercept = 0
+  intercept_std <- 0
 
   list(
     fit = final_fit,
