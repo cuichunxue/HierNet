@@ -806,13 +806,15 @@ generate_sample_data <- function(
 #' @param strong Use strong hierarchy constraint
 #' @param nlam Number of lambda values
 #' @param nfolds Number of CV folds
+#' @param model_type "interaction" (no quadratic) or "quadratic" (with quadratic)
 #' @return List with fit, cv_fit, and extracted results
 #' @throws Error if analysis fails
 run_hiernet_analysis <- function(
     X, y,
     strong = TRUE,
     nlam = 20,
-    nfolds = 5
+    nfolds = 5,
+    model_type = "interaction"
 ) {
   # Input validation
   if (!is.matrix(X)) X <- as.matrix(X)
@@ -903,6 +905,11 @@ run_hiernet_analysis <- function(
     interaction_matrix_std <- matrix(0, nrow = p, ncol = p)
     rownames(interaction_matrix_std) <- colnames(X)
     colnames(interaction_matrix_std) <- colnames(X)
+  }
+
+  # For interaction-only model, zero out diagonal (quadratic terms)
+  if (model_type == "interaction") {
+    diag(interaction_matrix_std) <- 0
   }
 
   # Interaction matrix (original scale): th_orig[i,j] = th_std[i,j] / (sx[i] * sx[j])
@@ -1461,7 +1468,8 @@ server <- function(input, output, session) {
           y = y,
           strong = (input$hierarchy_type == "strong"),
           nlam = input$nlam,
-          nfolds = input$nfolds
+          nfolds = input$nfolds,
+          model_type = input$model_type
         )
 
         incProgress(0.40, detail = "評価指標計算中")
