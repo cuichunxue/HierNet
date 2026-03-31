@@ -891,9 +891,21 @@ run_hiernet_analysis <- function(
   main_effects_std <- final_fit$bp - final_fit$bn
   names(main_effects_std) <- colnames(X)
 
+  # Validate standardized coefficients
+  if (any(!is.finite(main_effects_std))) {
+    warning("標準化係数にNaN/Infが含まれています。0に置換します")
+    main_effects_std[!is.finite(main_effects_std)] <- 0
+  }
+
   # Convert to original scale: beta_orig = beta_std / sx
   main_effects_orig <- main_effects_std / sx
   names(main_effects_orig) <- colnames(X)
+
+  # Validate original coefficients
+  if (any(!is.finite(main_effects_orig))) {
+    warning("元単位係数にNaN/Infが含まれています。0に置換します")
+    main_effects_orig[!is.finite(main_effects_orig)] <- 0
+  }
 
   # Interaction matrix (standardized)
   interaction_matrix_std <- final_fit$th
@@ -912,21 +924,24 @@ run_hiernet_analysis <- function(
     diag(interaction_matrix_std) <- 0
   }
 
+  # Validate standardized interaction matrix
+  if (any(!is.finite(interaction_matrix_std))) {
+    warning("標準化交互作用行列にNaN/Infが含まれています。0に置換します")
+    interaction_matrix_std[!is.finite(interaction_matrix_std)] <- 0
+  }
+
   # Interaction matrix (original scale): th_orig[i,j] = th_std[i,j] / (sx[i] * sx[j])
   interaction_matrix_orig <- interaction_matrix_std / outer(sx, sx)
   rownames(interaction_matrix_orig) <- colnames(X)
   colnames(interaction_matrix_orig) <- colnames(X)
 
-  # Compute predictions
-  predictions <- tryCatch(
-    as.vector(predict(final_fit, newx = X)),
-    error = function(e) {
-      warning("予測計算に失敗しました。フィット値を使用します")
-      as.vector(final_fit$yhat)
-    }
-  )
+  # Validate original interaction matrix
+  if (any(!is.finite(interaction_matrix_orig))) {
+    warning("元単位交互作用行列にNaN/Infが含まれています。0に置換します")
+    interaction_matrix_orig[!is.finite(interaction_matrix_orig)] <- 0
+  }
 
-  # Calculate intercepts
+  # Calculate intercepts FIRST (needed for prediction)
   # Original scale form: y = intercept + β×X + θ×(Xi - X̄i)(Xj - X̄j)
   # Main effects are NOT centered, interactions ARE centered
   # intercept = mean(y) - Σ(β_orig × mean(X))
@@ -937,6 +952,59 @@ run_hiernet_analysis <- function(
 
   # Standardized: Y is centered (mean=0), so intercept = 0
   intercept_std <- 0
+
+  # Compute predictions - MUST match the coefficients we display
+  # For interaction-only model, hierNet's predict() includes quadratic terms
+  # so we need to calculate manually using the modified interaction matrix
+  if (model_type == "interaction") {
+    # Manual prediction using original scale:
+    # ŷ = intercept + β×X + Σ θ_ij × (Xi - mx_i)(Xj - mx_j)
+    predictions <- rep(intercept_orig, nrow(X))
+    predictions <- predictions + as.vector(X %*% main_effects_orig)
+
+    # Add interaction terms (only off-diagonal since we zeroed diagonal)
+    X_centered <- sweep(X, 2, mx)  # Center X
+    for (i in 1:(ncol(X) - 1)) {
+      for (j in (i + 1):ncol(X)) {
+        theta_ij <- interaction_matrix_orig[i, j]
+        if (abs(theta_ij) > .Machine$double.eps) {
+          predictions <- predictions + theta_ij * X_centered[, i] * X_centered[, j]
+        }
+      }
+    }
+  } else {
+    # For quadratic model, also calculate manually for consistency
+    # This ensures predictions match displayed coefficients exactly
+    predictions <- rep(intercept_orig, nrow(X))
+    predictions <- predictions + as.vector(X %*% main_effects_orig)
+
+    # Add all interaction/quadratic terms
+    X_centered <- sweep(X, 2, mx)  # Center X
+    p <- ncol(X)
+    for (i in 1:p) {
+      for (j in i:p) {
+        theta_ij <- interaction_matrix_orig[i, j]
+        if (abs(theta_ij) > .Machine$double.eps) {
+          if (i == j) {
+            # Quadratic term: θ × (Xi - mx)²
+            predictions <- predictions + theta_ij * X_centered[, i]^2
+          } else {
+            # Interaction term: θ × (Xi - mx_i)(Xj - mx_j)
+            predictions <- predictions + theta_ij * X_centered[, i] * X_centered[, j]
+          }
+        }
+      }
+    }
+  }
+
+  # Validate predictions - check for NaN/Inf
+  if (any(!is.finite(predictions))) {
+    warning("予測値にNaN/Infが含まれています。hierNetの予測を使用します")
+    predictions <- tryCatch(
+      as.vector(predict(final_fit, newx = X)),
+      error = function(e) rep(mean_y, nrow(X))
+    )
+  }
 
   list(
     fit = final_fit,
