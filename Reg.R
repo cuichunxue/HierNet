@@ -635,9 +635,9 @@ compute_metrics <- function(y, predictions, n_params) {
     warning("目的変数の分散がゼロです")
     r_squared <- NA_real_
   } else {
+    # Deliberately NOT clamped: a negative R² (model worse than the mean)
+    # is a red flag the user must see, not a value to hide
     r_squared <- 1 - ss_res / ss_tot
-    # Clamp to [0, 1] for numerical stability
-    r_squared <- max(0, min(1, r_squared))
   }
 
   # Adjusted R² with proper degrees of freedom
@@ -676,7 +676,8 @@ compute_metrics <- function(y, predictions, n_params) {
 count_active_coefficients <- function(main_effects, int_mat) {
   list(
     n_main = sum(abs(main_effects) > COEF_ZERO_THRESHOLD),
-    n_interaction = sum(abs(int_mat[upper.tri(int_mat)]) > COEF_ZERO_THRESHOLD)
+    n_interaction = sum(abs(int_mat[upper.tri(int_mat)]) > COEF_ZERO_THRESHOLD),
+    n_quadratic = sum(abs(diag(int_mat)) > COEF_ZERO_THRESHOLD)
   )
 }
 
@@ -684,7 +685,8 @@ count_active_coefficients <- function(main_effects, int_mat) {
 #' @param r2 R-squared value
 #' @return CSS class name
 get_r2_class <- function(r2) {
-  if (is.na(r2) || r2 >= R2_EXCELLENT) "success"
+  if (is.na(r2)) "danger"
+  else if (r2 >= R2_EXCELLENT) "success"
   else if (r2 >= R2_GOOD) "warning"
   else "danger"
 }
@@ -807,6 +809,7 @@ generate_sample_data <- function(
 #' @param nlam Number of lambda values
 #' @param nfolds Number of CV folds
 #' @param model_type "interaction" (no quadratic) or "quadratic" (with quadratic)
+#' @param seed Optional random seed for reproducible CV fold assignment
 #' @return List with fit, cv_fit, and extracted results
 #' @throws Error if analysis fails
 run_hiernet_analysis <- function(
@@ -814,7 +817,8 @@ run_hiernet_analysis <- function(
     strong = TRUE,
     nlam = 20,
     nfolds = 5,
-    model_type = "interaction"
+    model_type = "interaction",
+    seed = NULL
 ) {
   # Input validation
   if (!is.matrix(X)) X <- as.matrix(X)
@@ -822,21 +826,31 @@ run_hiernet_analysis <- function(
     stop(sprintf("サンプル数(%d)がCV fold数(%d)より少ないです", nrow(X), nfolds))
   }
 
+  # Collected warnings, surfaced in the UI by the caller
+  warn_msgs <- character(0)
+
+  # Quadratic terms are controlled at FIT time via hierNet's diagonal argument.
+  # This is the statistically correct approach: for the interaction-only model,
+  # coefficients are optimized and lambda is cross-validated WITHOUT X² terms
+  # (post-hoc zeroing of fitted quadratic terms would invalidate both).
+  include_diagonal <- (model_type == "quadratic")
+
   # Fit lambda path (done once, reused for CV and final fit)
-  # Note: hierNet.path() does NOT support standardize/center arguments
   path_fit <- tryCatch(
     hierNet.path(
       x = X,
       y = y,
       nlam = nlam,
-      strong = strong
+      strong = strong,
+      diagonal = include_diagonal
     ),
     error = function(e) {
       stop(sprintf("hierNet.path failed: %s", e$message))
     }
   )
 
-  # Cross-validation
+  # Cross-validation (seeded so fold assignment and lambda selection are reproducible)
+  if (!is.null(seed) && is.finite(seed)) set.seed(as.integer(seed))
   cv_fit <- tryCatch(
     hierNet.cv(
       fit = path_fit,
@@ -855,14 +869,21 @@ run_hiernet_analysis <- function(
     stop("交差検証で最適なλを見つけられませんでした")
   }
 
+  # CV error at the selected lambda: honest out-of-sample performance estimate
+  # (in-sample R²/RMSE are optimistic)
+  cv_rmse <- tryCatch({
+    idx <- which.min(abs(cv_fit$lamlist - best_lambda))
+    sqrt(cv_fit$cv.err[idx])
+  }, error = function(e) NA_real_)
+
   # Final model with optimal lambda
-  # Note: hierNet() in some versions does NOT support standardize/center arguments
   final_fit <- tryCatch(
     hierNet(
       x = X,
       y = y,
       lam = best_lambda,
-      strong = strong
+      strong = strong,
+      diagonal = include_diagonal
     ),
     error = function(e) {
       stop(sprintf("Final model fitting failed: %s", e$message))
@@ -887,130 +908,148 @@ run_hiernet_analysis <- function(
     mx <- colMeans(X, na.rm = TRUE)
   }
 
+  p <- ncol(X)
+  mean_y <- mean(y, na.rm = TRUE)
+
   # Extract standardized coefficients (hierNet returns these)
   main_effects_std <- final_fit$bp - final_fit$bn
   names(main_effects_std) <- colnames(X)
-
-  # Validate standardized coefficients
   if (any(!is.finite(main_effects_std))) {
-    warning("標準化係数にNaN/Infが含まれています。0に置換します")
+    warn_msgs <- c(warn_msgs, "標準化係数にNaN/Infが含まれていたため0に置換しました")
     main_effects_std[!is.finite(main_effects_std)] <- 0
   }
 
   # Convert to original scale: beta_orig = beta_std / sx
   main_effects_orig <- main_effects_std / sx
   names(main_effects_orig) <- colnames(X)
-
-  # Validate original coefficients
   if (any(!is.finite(main_effects_orig))) {
-    warning("元単位係数にNaN/Infが含まれています。0に置換します")
+    warn_msgs <- c(warn_msgs, "元単位係数にNaN/Infが含まれていたため0に置換しました")
     main_effects_orig[!is.finite(main_effects_orig)] <- 0
   }
 
   # Interaction matrix (standardized)
   interaction_matrix_std <- final_fit$th
-  if (!is.null(interaction_matrix_std)) {
-    rownames(interaction_matrix_std) <- colnames(X)
-    colnames(interaction_matrix_std) <- colnames(X)
-  } else {
-    p <- ncol(X)
+  if (is.null(interaction_matrix_std)) {
     interaction_matrix_std <- matrix(0, nrow = p, ncol = p)
-    rownames(interaction_matrix_std) <- colnames(X)
-    colnames(interaction_matrix_std) <- colnames(X)
   }
-
-  # For interaction-only model, zero out diagonal (quadratic terms)
-  if (model_type == "interaction") {
+  rownames(interaction_matrix_std) <- colnames(X)
+  colnames(interaction_matrix_std) <- colnames(X)
+  if (any(!is.finite(interaction_matrix_std))) {
+    warn_msgs <- c(warn_msgs, "交互作用係数にNaN/Infが含まれていたため0に置換しました")
+    interaction_matrix_std[!is.finite(interaction_matrix_std)] <- 0
+  }
+  # Safety: with diagonal=FALSE hierNet already returns 0 diagonal; enforce anyway
+  if (!include_diagonal) {
     diag(interaction_matrix_std) <- 0
   }
 
-  # Validate standardized interaction matrix
-  if (any(!is.finite(interaction_matrix_std))) {
-    warning("標準化交互作用行列にNaN/Infが含まれています。0に置換します")
-    interaction_matrix_std[!is.finite(interaction_matrix_std)] <- 0
+  # Predictions come from hierNet itself: the authoritative model output.
+  # Metrics (R², RMSE, ...) are computed against these, so they always
+  # reflect the actually fitted model.
+  predictions <- tryCatch(
+    as.vector(predict(final_fit, newx = X)),
+    error = function(e) {
+      warn_msgs <<- c(warn_msgs, "予測計算に失敗したためフィット値を使用します")
+      as.vector(final_fit$yhat)
+    }
+  )
+  if (any(!is.finite(predictions))) {
+    warn_msgs <- c(warn_msgs, "予測値にNaN/Infが含まれていたため平均値で補完しました")
+    predictions[!is.finite(predictions)] <- mean_y
   }
 
-  # Interaction matrix (original scale): th_orig[i,j] = th_std[i,j] / (sx[i] * sx[j])
-  interaction_matrix_orig <- interaction_matrix_std / outer(sx, sx)
+  # --------------------------------------------------------------------------
+  # Equation calibration & self-check
+  # --------------------------------------------------------------------------
+  # Displayed equation (original scale):
+  #   ŷ = intercept + Σ β_orig×X + Σ_{i<j} θ_ij×(Xi-X̄i)(Xj-X̄j) + Σ θ_ii×(Xi-X̄i)²
+  # hierNet centers its internal interaction features, so the exact intercept
+  # includes a -Σθ×Cov(Xi,Xj) term (the mean of a centered product is the
+  # covariance, NOT zero). Rather than depending on package internals, the
+  # intercept is calibrated empirically so the displayed equation reproduces
+  # predict() exactly, and the match is verified (equation self-check).
+
+  Xc <- sweep(X, 2, mx)
+
+  # Non-intercept part of the displayed equation, given a pairwise coefficient
+  # matrix (upper triangle incl. diagonal defines the equation terms)
+  eq_linear_predictor <- function(theta_orig) {
+    lp <- as.vector(X %*% main_effects_orig)
+    for (i in seq_len(p)) {
+      for (j in i:p) {
+        th_ij <- theta_orig[i, j]
+        if (is.finite(th_ij) && abs(th_ij) > .Machine$double.eps) {
+          lp <- lp + if (i == j) th_ij * Xc[, i]^2 else th_ij * Xc[, i] * Xc[, j]
+        }
+      }
+    }
+    lp
+  }
+
+  th_orig_raw <- interaction_matrix_std / outer(sx, sx)
+  th_orig_raw[!is.finite(th_orig_raw)] <- 0
+
+  # hierNet's th convention (pair effect = th[i,j], or th[i,j]+th[j,i]) is
+  # verified empirically: the correct convention makes (predict() - equation)
+  # constant across all observations
+  th_sum <- th_orig_raw + t(th_orig_raw)
+  diag(th_sum) <- diag(th_orig_raw)
+  candidates <- list(upper = th_orig_raw, sum = th_sum)
+
+  eq_tol <- 1e-6 * (sd(y) + 1)
+  best <- NULL
+  for (nm in names(candidates)) {
+    lp <- eq_linear_predictor(candidates[[nm]])
+    d <- predictions - lp
+    d_sd <- if (all(is.finite(d))) sd(d) else Inf
+    if (is.na(d_sd)) d_sd <- Inf
+    if (is.null(best) || d_sd < best$sd) {
+      best <- list(name = nm, theta = candidates[[nm]], sd = d_sd,
+                   mean = mean(d[is.finite(d)]))
+    }
+  }
+
+  equation_ok <- is.finite(best$sd) && best$sd <= eq_tol
+  if (!equation_ok) {
+    warn_msgs <- c(warn_msgs, sprintf(
+      "回帰式セルフチェック: 表示式とモデル予測の偏差(SD=%.3g)が許容値を超えています。式は近似値として扱ってください",
+      best$sd
+    ))
+  }
+
+  # Adopt the verified convention; symmetrize for display (heatmap etc.)
+  interaction_matrix_orig <- best$theta
+  interaction_matrix_orig[lower.tri(interaction_matrix_orig)] <-
+    t(interaction_matrix_orig)[lower.tri(interaction_matrix_orig)]
   rownames(interaction_matrix_orig) <- colnames(X)
   colnames(interaction_matrix_orig) <- colnames(X)
 
-  # Validate original interaction matrix
-  if (any(!is.finite(interaction_matrix_orig))) {
-    warning("元単位交互作用行列にNaN/Infが含まれています。0に置換します")
-    interaction_matrix_orig[!is.finite(interaction_matrix_orig)] <- 0
+  # Keep the standardized matrix consistent with the calibrated convention
+  interaction_matrix_std <- interaction_matrix_orig * outer(sx, sx)
+  rownames(interaction_matrix_std) <- colnames(X)
+  colnames(interaction_matrix_std) <- colnames(X)
+
+  # Exact intercept: constant offset that makes the equation reproduce predict()
+  intercept_orig <- best$mean
+  if (!is.finite(intercept_orig)) {
+    intercept_orig <- mean_y - sum(main_effects_orig * mx)
+    if (!is.finite(intercept_orig)) intercept_orig <- 0
   }
 
-  # Calculate intercepts FIRST (needed for prediction)
-  # Original scale form: y = intercept + β×X + θ×(Xi - X̄i)(Xj - X̄j)
-  # Main effects are NOT centered, interactions ARE centered
-  # intercept = mean(y) - Σ(β_orig × mean(X))
-  # (interaction terms are 0 at means since they're centered)
-  mean_y <- mean(y, na.rm = TRUE)
-  intercept_orig <- mean_y - sum(main_effects_orig * mx)
-  if (is.na(intercept_orig)) intercept_orig <- 0
-
-  # Standardized: Y is centered (mean=0), so intercept = 0
-  intercept_std <- 0
-
-  # Compute predictions - MUST match the coefficients we display
-  # For interaction-only model, hierNet's predict() includes quadratic terms
-  # so we need to calculate manually using the modified interaction matrix
-  if (model_type == "interaction") {
-    # Manual prediction using original scale:
-    # ŷ = intercept + β×X + Σ θ_ij × (Xi - mx_i)(Xj - mx_j)
-    predictions <- rep(intercept_orig, nrow(X))
-    predictions <- predictions + as.vector(X %*% main_effects_orig)
-
-    # Add interaction terms (only off-diagonal since we zeroed diagonal)
-    X_centered <- sweep(X, 2, mx)  # Center X
-    for (i in 1:(ncol(X) - 1)) {
-      for (j in (i + 1):ncol(X)) {
-        theta_ij <- interaction_matrix_orig[i, j]
-        if (abs(theta_ij) > .Machine$double.eps) {
-          predictions <- predictions + theta_ij * X_centered[, i] * X_centered[, j]
-        }
-      }
-    }
-  } else {
-    # For quadratic model, also calculate manually for consistency
-    # This ensures predictions match displayed coefficients exactly
-    predictions <- rep(intercept_orig, nrow(X))
-    predictions <- predictions + as.vector(X %*% main_effects_orig)
-
-    # Add all interaction/quadratic terms
-    X_centered <- sweep(X, 2, mx)  # Center X
-    p <- ncol(X)
-    for (i in 1:p) {
-      for (j in i:p) {
-        theta_ij <- interaction_matrix_orig[i, j]
-        if (abs(theta_ij) > .Machine$double.eps) {
-          if (i == j) {
-            # Quadratic term: θ × (Xi - mx)²
-            predictions <- predictions + theta_ij * X_centered[, i]^2
-          } else {
-            # Interaction term: θ × (Xi - mx_i)(Xj - mx_j)
-            predictions <- predictions + theta_ij * X_centered[, i] * X_centered[, j]
-          }
-        }
-      }
-    }
-  }
-
-  # Validate predictions - check for NaN/Inf
-  if (any(!is.finite(predictions))) {
-    warning("予測値にNaN/Infが含まれています。hierNetの予測を使用します")
-    predictions <- tryCatch(
-      as.vector(predict(final_fit, newx = X)),
-      error = function(e) rep(mean_y, nrow(X))
-    )
-  }
+  # Standardized equation is displayed in centered-Y form:
+  #   (Y - Ȳ) = intercept_std + Σ β_std×X* + Σ θ_std×Xi*×Xj*
+  # intercept_std is exactly 0 when no interactions are active; with active
+  # interactions it equals -Σθ_std×mean(Xi*Xj*) (correlation correction)
+  intercept_std <- intercept_orig - mean_y + sum(main_effects_orig * mx)
+  if (!is.finite(intercept_std)) intercept_std <- 0
 
   list(
     fit = final_fit,
     cv_fit = cv_fit,
     path_fit = path_fit,
     best_lambda = best_lambda,
+    cv_rmse = cv_rmse,
+    mean_y = mean_y,
     # Standardized coefficients
     main_effects_std = main_effects_std,
     interaction_matrix_std = interaction_matrix_std,
@@ -1022,6 +1061,11 @@ run_hiernet_analysis <- function(
     # Scaling info
     mx = mx,
     sx = sx,
+    # Equation self-check result
+    equation_check = list(ok = equation_ok, deviation_sd = best$sd,
+                          convention = best$name),
+    # Warnings to surface in the UI
+    warnings = warn_msgs,
     # Legacy compatibility (default to standardized)
     main_effects = main_effects_std,
     interaction_matrix = interaction_matrix_std,
@@ -1179,6 +1223,7 @@ ui <- fluidPage(
                 hr(style = sprintf("border-color: %s;", COLORS$border)),
                 sliderInput("nlam", "Lambda候補数", min = 10, max = 50, value = 20, step = 5),
                 sliderInput("nfolds", "交差検証フォールド数", min = 3, max = 10, value = 5, step = 1),
+                numericInput("cv_seed", "乱数シード（再現性の確保）", value = 42, min = 1, step = 1),
                 actionButton("run_analysis", "分析実行", class = "btn-analysis", icon = icon("play"))
               )
             )
@@ -1528,6 +1573,20 @@ server <- function(input, output, session) {
         X <- validated$X
         y <- validated$y
 
+        # Quadratic model requires >= 3 distinct levels: for a 2-level
+        # variable X² is perfectly collinear with X and cannot be estimated
+        if (input$model_type == "quadratic") {
+          n_unique <- apply(X, 2, function(col) length(unique(col)))
+          low_level_vars <- colnames(X)[n_unique < 3]
+          if (length(low_level_vars) > 0) {
+            showNotification(
+              sprintf("2水準以下の変数はX²がXと完全共線のため2次項を推定できません: %s",
+                      paste(low_level_vars, collapse = ", ")),
+              type = "warning", duration = 10
+            )
+          }
+        }
+
         incProgress(0.25, detail = "交差検証実行中（時間がかかります）")
 
         # Run analysis
@@ -1537,8 +1596,14 @@ server <- function(input, output, session) {
           strong = (input$hierarchy_type == "strong"),
           nlam = input$nlam,
           nfolds = input$nfolds,
-          model_type = input$model_type
+          model_type = input$model_type,
+          seed = input$cv_seed
         )
+
+        # Surface analysis warnings (NaN/Inf replacement, equation self-check, ...)
+        for (w in analysis_result$warnings) {
+          showNotification(w, type = "warning", duration = 10)
+        }
 
         incProgress(0.40, detail = "評価指標計算中")
 
@@ -1548,8 +1613,16 @@ server <- function(input, output, session) {
           analysis_result$interaction_matrix
         )
 
-        n_params <- active_counts$n_main + active_counts$n_interaction
+        n_params <- active_counts$n_main + active_counts$n_interaction +
+          active_counts$n_quadratic
         metrics <- compute_metrics(y, analysis_result$predictions, n_params)
+
+        if (is.finite(metrics$r_squared %||% NA_real_) && metrics$r_squared < 0) {
+          showNotification(
+            "R²が負です: モデルの予測性能が平均値予測を下回っています。結果の使用は推奨されません",
+            type = "error", duration = 10
+          )
+        }
 
         incProgress(0.20, detail = "結果整理中")
 
@@ -1558,6 +1631,10 @@ server <- function(input, output, session) {
           y = y,
           X = X,
           var_names = colnames(X),
+          target_var = input$target_var,
+          mean_y = analysis_result$mean_y,
+          cv_rmse = analysis_result$cv_rmse,
+          equation_check = analysis_result$equation_check,
           predictions = analysis_result$predictions,
           # Original scale coefficients
           intercept_orig = analysis_result$intercept_orig,
@@ -1581,6 +1658,7 @@ server <- function(input, output, session) {
           metrics = metrics,
           n_main = active_counts$n_main,
           n_interaction = active_counts$n_interaction,
+          n_quadratic = active_counts$n_quadratic,
           hierarchy_type = input$hierarchy_type,
           model_type = input$model_type
         )
@@ -1589,8 +1667,9 @@ server <- function(input, output, session) {
 
         updateTabsetPanel(session, "result_tabs", selected = "result_tab")
         showNotification(
-          sprintf("hierNet分析が完了しました（R²=%.3f, 選択変数: 主効果%d, 交互作用%d）",
-                  metrics$r_squared %||% 0, active_counts$n_main, active_counts$n_interaction),
+          sprintf("hierNet分析が完了しました（R²=%.3f, 主効果%d, 交互作用%d, 2次項%d）",
+                  metrics$r_squared %||% 0, active_counts$n_main,
+                  active_counts$n_interaction, active_counts$n_quadratic),
           type = "message",
           duration = 5
         )
@@ -1640,6 +1719,9 @@ server <- function(input, output, session) {
           div(class = "metric-label", "RMSE"),
           div(class = "metric-value", fmt(m$rmse))),
       div(class = "metric-box",
+          div(class = "metric-label", "CV-RMSE (交差検証)"),
+          div(class = "metric-value", fmt(res$cv_rmse))),
+      div(class = "metric-box",
           div(class = "metric-label", "MAE"),
           div(class = "metric-value", fmt(m$mae))),
       div(class = "metric-box",
@@ -1648,6 +1730,10 @@ server <- function(input, output, session) {
       div(class = "metric-box",
           div(class = "metric-label", "選択交互作用数"),
           div(class = "metric-value", style = sprintf("color: %s;", COLORS$accent_purple), res$n_interaction)),
+      div(class = "metric-box",
+          div(class = "metric-label", "選択2次項数"),
+          div(class = "metric-value", style = sprintf("color: %s;", COLORS$accent_orange),
+              res$n_quadratic %||% 0)),
       div(class = "metric-box",
           div(class = "metric-label", "最適 λ"),
           div(class = "metric-value", fmt(res$best_lambda))),
@@ -1671,7 +1757,7 @@ server <- function(input, output, session) {
     if (scale == "original") {
       "元単位: 主効果β×X、交互作用θ×(Xi-X̄i)(Xj-X̄j)。予測式として使用可能。"
     } else {
-      "標準化: 変数間の相対的重要度を比較可能。1SD変化あたりの効果を表す。"
+      "標準化: 変数間の相対的重要度を比較可能。1SD変化あたりの効果を表す。左辺は中心化した目的変数 (Y - Ȳ)。"
     }
   })
 
@@ -1699,12 +1785,19 @@ server <- function(input, output, session) {
     intercept <- as.numeric(intercept)
     if (is.na(intercept)) intercept <- 0
 
+    # Use the target name captured at analysis time (input$target_var may have
+    # changed since). Standardized equation predicts centered Y: label as (Y - Ȳ)
+    target_name <- res$target_var %||% input$target_var
+    if (scale != "original" && !is.null(res$mean_y)) {
+      target_name <- sprintf("(%s - %.4g)", target_name, res$mean_y)
+    }
+
     equation <- build_equation(
       intercept,
       main_effects,
       interaction_matrix,
       res$var_names,
-      input$target_var,
+      target_name,
       scale = scale,
       mx = res$mx
     )

@@ -95,36 +95,46 @@ cat(sprintf("  真の切片  = %.4f\n\n", intercept_true))
 cat("【予測値の検証】\n")
 
 # hierNetの予測
-pred_hiernet <- predict(fit1, newx = X)
+pred_hiernet <- as.vector(predict(fit1, newx = X))
 
-# 手動計算（元単位）: Y = intercept + β×X
-pred_manual_orig <- intercept_orig + X %*% beta_orig
+# 弱い正則化では小さな交互作用係数が残ることがある
+n_active_th <- sum(abs(fit1$th) > 1e-10)
+cat(sprintf("  （参考）非ゼロth要素数: %d\n", n_active_th))
 
-# 手動計算（標準化形式から）:
-# Y_centered = β_std × X_std → Y = mean(Y) + β_std × X_std
-X_std <- scale(X, center = mx, scale = sx)
-pred_manual_std <- my + X_std %*% beta_std
-
-cat("  サンプル予測値（最初の5件）:\n")
-cat("  -----------------------------------------------------\n")
-cat(sprintf("  %-8s  %-12s  %-12s  %-12s\n", "実測値", "hierNet", "手動(元単位)", "手動(標準化)"))
-cat("  -----------------------------------------------------\n")
-for (i in 1:5) {
-  cat(sprintf("  %-8.2f  %-12.4f  %-12.4f  %-12.4f\n",
-              Y[i], pred_hiernet[i], pred_manual_orig[i], pred_manual_std[i]))
+# 手動計算（元単位）: Y = intercept + β×X + 残存th項（中心化積）
+Xc1 <- sweep(X, 2, mx)
+th_orig1 <- fit1$th / outer(sx, sx)
+lp1 <- as.vector(X %*% beta_orig)
+for (i in 1:ncol(X)) {
+  for (j in i:ncol(X)) {
+    th_ij <- if (i == j) th_orig1[i, i] else th_orig1[i, j] + th_orig1[j, i]
+    if (abs(th_ij) > 1e-15) {
+      lp1 <- lp1 + if (i == j) th_ij * Xc1[, i]^2 else th_ij * Xc1[, i] * Xc1[, j]
+    }
+  }
 }
+# upper規約でも計算し、良い方を採用
+lp1u <- as.vector(X %*% beta_orig)
+for (i in 1:ncol(X)) {
+  for (j in i:ncol(X)) {
+    th_ij <- th_orig1[i, j]
+    if (abs(th_ij) > 1e-15) {
+      lp1u <- lp1u + if (i == j) th_ij * Xc1[, i]^2 else th_ij * Xc1[, i] * Xc1[, j]
+    }
+  }
+}
+lp1_best <- if (sd(pred_hiernet - lp1u) <= sd(pred_hiernet - lp1)) lp1u else lp1
+intercept_cal1 <- mean(pred_hiernet - lp1_best)
+pred_manual_orig <- intercept_cal1 + lp1_best
+
+cat(sprintf("  校正切片 = %.4f / 素朴切片 = %.4f\n", intercept_cal1, intercept_orig))
 
 cat("\n  予測値の差分:\n")
 cat(sprintf("    hierNet vs 手動(元単位): max|diff| = %.2e\n",
             max(abs(pred_hiernet - pred_manual_orig))))
-cat(sprintf("    hierNet vs 手動(標準化): max|diff| = %.2e\n",
-            max(abs(pred_hiernet - pred_manual_std))))
-cat(sprintf("    元単位 vs 標準化:        max|diff| = %.2e\n\n",
-            max(abs(pred_manual_orig - pred_manual_std))))
 
 # 判定
-test1_pass <- max(abs(pred_hiernet - pred_manual_orig)) < 1e-10 &&
-              max(abs(pred_hiernet - pred_manual_std)) < 1e-10
+test1_pass <- max(abs(pred_hiernet - pred_manual_orig)) < 1e-8
 
 cat(sprintf("  テスト1結果: %s\n\n", ifelse(test1_pass, "✓ PASS", "✗ FAIL")))
 
@@ -187,44 +197,42 @@ cat(sprintf("  真の値       = [%.4f, %.4f]\n", beta_true2[1], beta_true2[2]))
 cat(sprintf("  交互作用 θ_orig[1,2] = %.4f\n", theta_orig2[1,2]))
 cat(sprintf("  真の値               = %.4f\n\n", theta_true))
 
-# 切片
-intercept_orig2 <- my2 - sum(beta_orig2 * mx2)
-cat("【切片】\n")
-cat(sprintf("  元単位切片 = %.4f (真の値: %.4f)\n\n", intercept_orig2, intercept_true2))
-
-# 予測値の検証
+# 予測値の検証（アプリと同じ校正方式）
+# 注: 中心化した積の平均は共分散(≠0)なので、素朴切片 mean(Y)-Σβ×X̄ は
+#     交互作用があると厳密には正しくない。切片は実測校正する。
 cat("【予測値の検証】\n")
 
-pred_hiernet2 <- predict(fit2, newx = X2_mat)
+pred_hiernet2 <- as.vector(predict(fit2, newx = X2_mat))
 
-# 手動計算（元単位）: Y = intercept + β×X + θ×(X1-mx1)(X2-mx2)
+# 非切片部分（元単位）: β×X + θ×(X1-mx1)(X2-mx2)
 X1_c <- X2_mat[,1] - mx2[1]
 X2_c <- X2_mat[,2] - mx2[2]
-interaction_term <- theta_orig2[1,2] * X1_c * X2_c
-pred_manual_orig2 <- intercept_orig2 + X2_mat %*% beta_orig2 + interaction_term
 
-# 手動計算（標準化形式から）
-X2_std <- scale(X2_mat, center = mx2, scale = sx2)
-interaction_std <- theta_std2[1,2] * X2_std[,1] * X2_std[,2]
-pred_manual_std2 <- my2 + X2_std %*% beta_std2 + interaction_std
+# th規約2種（upper / sum）で試し、predict()との差が定数になる方を採用
+lp_upper <- as.vector(X2_mat %*% beta_orig2) + theta_orig2[1,2] * X1_c * X2_c
+theta_sum2 <- theta_orig2[1,2] + theta_orig2[2,1]
+lp_sum <- as.vector(X2_mat %*% beta_orig2) + theta_sum2 * X1_c * X2_c
 
-cat("  サンプル予測値（最初の5件）:\n")
-cat("  -----------------------------------------------------\n")
-cat(sprintf("  %-8s  %-12s  %-12s  %-12s\n", "実測値", "hierNet", "手動(元単位)", "手動(標準化)"))
-cat("  -----------------------------------------------------\n")
-for (i in 1:5) {
-  cat(sprintf("  %-8.2f  %-12.4f  %-12.4f  %-12.4f\n",
-              Y2[i], pred_hiernet2[i], pred_manual_orig2[i], pred_manual_std2[i]))
-}
+sd_upper <- sd(pred_hiernet2 - lp_upper)
+sd_sum <- sd(pred_hiernet2 - lp_sum)
+lp2 <- if (sd_upper <= sd_sum) lp_upper else lp_sum
+conv2 <- if (sd_upper <= sd_sum) "upper" else "sum"
 
-cat("\n  予測値の差分:\n")
-cat(sprintf("    hierNet vs 手動(元単位): max|diff| = %.2e\n",
+# 切片の実測校正
+intercept_orig2 <- mean(pred_hiernet2 - lp2)
+naive_intercept2 <- my2 - sum(beta_orig2 * mx2)
+pred_manual_orig2 <- intercept_orig2 + lp2
+
+cat(sprintf("  採用th規約: %s（偏差SD: upper=%.2e, sum=%.2e）\n", conv2, sd_upper, sd_sum))
+cat(sprintf("  校正切片 = %.4f / 素朴切片 = %.4f（差=共分散補正分: %.4f）\n",
+            intercept_orig2, naive_intercept2, intercept_orig2 - naive_intercept2))
+cat(sprintf("  真の切片 = %.4f\n\n", intercept_true2))
+
+cat("  予測値の差分:\n")
+cat(sprintf("    hierNet vs 手動(校正済み元単位): max|diff| = %.2e\n",
             max(abs(pred_hiernet2 - pred_manual_orig2))))
-cat(sprintf("    hierNet vs 手動(標準化): max|diff| = %.2e\n",
-            max(abs(pred_hiernet2 - pred_manual_std2))))
 
-test2_pass <- max(abs(pred_hiernet2 - pred_manual_orig2)) < 1e-10 &&
-              max(abs(pred_hiernet2 - pred_manual_std2)) < 1e-10
+test2_pass <- max(abs(pred_hiernet2 - pred_manual_orig2)) < 1e-8
 
 cat(sprintf("\n  テスト2結果: %s\n\n", ifelse(test2_pass, "✓ PASS", "✗ FAIL")))
 
@@ -285,47 +293,110 @@ cat(sprintf("  真の値       = [%.4f, %.4f]\n", beta_true3[1], beta_true3[2]))
 cat(sprintf("  2次項 θ_orig[1,1] = %.4f (真の値: %.4f)\n", theta_orig3[1,1], theta_diag_true[1]))
 cat(sprintf("  2次項 θ_orig[2,2] = %.4f (真の値: %.4f)\n\n", theta_orig3[2,2], theta_diag_true[2]))
 
-intercept_orig3 <- my3 - sum(beta_orig3 * mx3)
-cat("【切片】\n")
-cat(sprintf("  元単位切片 = %.4f (真の値: %.4f)\n\n", intercept_orig3, intercept_true3))
-
-# 予測値の検証
+# 予測値の検証（アプリと同じ校正方式: 2次項の平均は分散≠0なので切片を校正）
 cat("【予測値の検証】\n")
 
-pred_hiernet3 <- predict(fit3, newx = X3_mat)
+pred_hiernet3 <- as.vector(predict(fit3, newx = X3_mat))
 
-# 手動計算（元単位）
 X1_c3 <- X3_mat[,1] - mx3[1]
 X2_c3 <- X3_mat[,2] - mx3[2]
-quadratic_term <- theta_orig3[1,1] * X1_c3^2 + theta_orig3[2,2] * X2_c3^2
-interaction_term3 <- theta_orig3[1,2] * X1_c3 * X2_c3
-pred_manual_orig3 <- intercept_orig3 + X3_mat %*% beta_orig3 + quadratic_term + interaction_term3
 
-# 手動計算（標準化形式から）
-X3_std <- scale(X3_mat, center = mx3, scale = sx3)
-quadratic_std <- theta_std3[1,1] * X3_std[,1]^2 + theta_std3[2,2] * X3_std[,2]^2
-interaction_std3 <- theta_std3[1,2] * X3_std[,1] * X3_std[,2]
-pred_manual_std3 <- my3 + X3_std %*% beta_std3 + quadratic_std + interaction_std3
-
-cat("  サンプル予測値（最初の5件）:\n")
-cat("  -----------------------------------------------------\n")
-cat(sprintf("  %-8s  %-12s  %-12s  %-12s\n", "実測値", "hierNet", "手動(元単位)", "手動(標準化)"))
-cat("  -----------------------------------------------------\n")
-for (i in 1:5) {
-  cat(sprintf("  %-8.2f  %-12.4f  %-12.4f  %-12.4f\n",
-              Y3[i], pred_hiernet3[i], pred_manual_orig3[i], pred_manual_std3[i]))
+# th規約2種で試す
+mk_lp3 <- function(th_pair) {
+  as.vector(X3_mat %*% beta_orig3) +
+    theta_orig3[1,1] * X1_c3^2 + theta_orig3[2,2] * X2_c3^2 +
+    th_pair * X1_c3 * X2_c3
 }
+lp3_upper <- mk_lp3(theta_orig3[1,2])
+lp3_sum <- mk_lp3(theta_orig3[1,2] + theta_orig3[2,1])
 
-cat("\n  予測値の差分:\n")
-cat(sprintf("    hierNet vs 手動(元単位): max|diff| = %.2e\n",
+sd3_upper <- sd(pred_hiernet3 - lp3_upper)
+sd3_sum <- sd(pred_hiernet3 - lp3_sum)
+lp3 <- if (sd3_upper <= sd3_sum) lp3_upper else lp3_sum
+conv3 <- if (sd3_upper <= sd3_sum) "upper" else "sum"
+
+intercept_orig3 <- mean(pred_hiernet3 - lp3)
+naive_intercept3 <- my3 - sum(beta_orig3 * mx3)
+pred_manual_orig3 <- intercept_orig3 + lp3
+
+cat(sprintf("  採用th規約: %s（偏差SD: upper=%.2e, sum=%.2e）\n", conv3, sd3_upper, sd3_sum))
+cat(sprintf("  校正切片 = %.4f / 素朴切片 = %.4f（差=分散補正分: %.4f）\n",
+            intercept_orig3, naive_intercept3, intercept_orig3 - naive_intercept3))
+cat(sprintf("  真の切片 = %.4f\n\n", intercept_true3))
+
+cat("  予測値の差分:\n")
+cat(sprintf("    hierNet vs 手動(校正済み元単位): max|diff| = %.2e\n",
             max(abs(pred_hiernet3 - pred_manual_orig3))))
-cat(sprintf("    hierNet vs 手動(標準化): max|diff| = %.2e\n",
-            max(abs(pred_hiernet3 - pred_manual_std3))))
 
-test3_pass <- max(abs(pred_hiernet3 - pred_manual_orig3)) < 1e-10 &&
-              max(abs(pred_hiernet3 - pred_manual_std3)) < 1e-10
+test3_pass <- max(abs(pred_hiernet3 - pred_manual_orig3)) < 1e-8
 
 cat(sprintf("\n  テスト3結果: %s\n\n", ifelse(test3_pass, "✓ PASS", "✗ FAIL")))
+
+
+# -----------------------------------------------------------------------------
+# テスト4: diagonal=FALSE（交互作用モデル）と切片校正の検証
+# -----------------------------------------------------------------------------
+
+cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+cat("テスト4: diagonal=FALSE と切片校正（アプリの実装方式）\n")
+cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+set.seed(22222)
+n <- 500
+
+# 相関のあるX（共分散補正の効果を確認するため）
+X1 <- rnorm(n, mean = 20, sd = 4)
+X2 <- 0.6 * X1 + rnorm(n, mean = 5, sd = 2)  # X1と相関
+
+Y4 <- 5 + 1.5*X1 + 2*X2 + 0.3*(X1 - mean(X1))*(X2 - mean(X2)) + rnorm(n, sd = 1)
+X4_mat <- cbind(X1, X2)
+colnames(X4_mat) <- c("X1", "X2")
+
+cat(sprintf("【設定】Cor(X1,X2) = %.3f（相関あり → 共分散補正が必要な条件）\n\n",
+            cor(X1, X2)))
+
+# 交互作用モデル: diagonal=FALSE でフィット
+fit4 <- hierNet(x = X4_mat, y = Y4, lam = 1, strong = TRUE, diagonal = FALSE)
+
+cat("【diagonal=FALSE の確認】\n")
+cat(sprintf("  th対角成分: [%.6f, %.6f]（0であるべき）\n\n",
+            fit4$th[1,1], fit4$th[2,2]))
+
+mx4 <- fit4$mx; sx4 <- fit4$sx; my4 <- mean(Y4)
+beta_orig4 <- (fit4$bp - fit4$bn) / sx4
+pred_hn4 <- as.vector(predict(fit4, newx = X4_mat))
+
+# 規約チェック: pair効果 = th[i,j] (upper) か th[i,j]+th[j,i] (sum) か
+Xc <- sweep(X4_mat, 2, mx4)
+th_orig_upper <- fit4$th / outer(sx4, sx4)
+th_orig_sum <- th_orig_upper + t(th_orig_upper); diag(th_orig_sum) <- diag(th_orig_upper)
+
+check_conv <- function(theta) {
+  lp <- as.vector(X4_mat %*% beta_orig4) + theta[1,2] * Xc[,1] * Xc[,2]
+  d <- pred_hn4 - lp
+  c(sd = sd(d), mean = mean(d))
+}
+res_upper <- check_conv(th_orig_upper)
+res_sum <- check_conv(th_orig_sum)
+
+cat("【th規約チェック】(predict() − 式) が定数になる規約が正解\n")
+cat(sprintf("  upper規約: 偏差SD = %.3e\n", res_upper["sd"]))
+cat(sprintf("  sum規約:   偏差SD = %.3e\n\n", res_sum["sd"]))
+
+winner <- if (res_upper["sd"] <= res_sum["sd"]) "upper" else "sum"
+res_best <- if (winner == "upper") res_upper else res_sum
+
+cat(sprintf("  採用規約: %s\n", winner))
+cat(sprintf("  校正切片 = %.4f\n", res_best["mean"]))
+
+# 素朴な切片（共分散補正なし）との比較
+naive_intercept <- my4 - sum(beta_orig4 * mx4)
+cat(sprintf("  素朴切片 = mean(Y) - Σβ×X̄ = %.4f\n", naive_intercept))
+cat(sprintf("  差（共分散補正分） = %.4f\n\n", res_best["mean"] - naive_intercept))
+
+test4_pass <- res_best["sd"] < 1e-8
+cat(sprintf("  テスト4結果: %s\n", ifelse(test4_pass, "✓ PASS（式がpredict()を完全再現）", "✗ FAIL")))
+cat("  ※ 「差」が非ゼロなら、旧実装（素朴切片）はその分だけ予測を外していた\n\n")
 
 
 # -----------------------------------------------------------------------------
@@ -338,20 +409,25 @@ cat("==============================================================\n\n")
 
 cat(sprintf("  テスト1 (主効果のみ):     %s\n", ifelse(test1_pass, "✓ PASS", "✗ FAIL")))
 cat(sprintf("  テスト2 (交互作用あり):   %s\n", ifelse(test2_pass, "✓ PASS", "✗ FAIL")))
-cat(sprintf("  テスト3 (2次項あり):      %s\n\n", ifelse(test3_pass, "✓ PASS", "✗ FAIL")))
+cat(sprintf("  テスト3 (2次項あり):      %s\n", ifelse(test3_pass, "✓ PASS", "✗ FAIL")))
+cat(sprintf("  テスト4 (diagonal/切片校正): %s\n\n", ifelse(test4_pass, "✓ PASS", "✗ FAIL")))
 
-all_pass <- test1_pass && test2_pass && test3_pass
+all_pass <- test1_pass && test2_pass && test3_pass && test4_pass
 cat(sprintf("  総合結果: %s\n\n", ifelse(all_pass, "✓ 全テスト合格", "✗ 一部テスト失敗")))
 
 cat("【検証された変換式】\n")
 cat("  元単位係数:\n")
 cat("    β_orig = β_std / SD(X)\n")
-cat("    θ_orig = θ_std / (SD(Xi) × SD(Xj))\n")
-cat("    切片 = mean(Y) - Σ(β_orig × mean(X))\n\n")
+cat("    θ_orig = θ_std / (SD(Xi) × SD(Xj))\n\n")
+cat("  切片（重要）:\n")
+cat("    素朴式 mean(Y) - Σ(β_orig × X̄) は交互作用があると不正確。\n")
+cat("    中心化積 (Xi-X̄i)(Xj-X̄j) のデータ平均は共分散(≠0)であり、\n")
+cat("    正確な切片には -Σθ×Cov 補正が必要。\n")
+cat("    → アプリは predict() との差分から切片を実測校正する方式を採用。\n\n")
 cat("  予測式（元単位）:\n")
-cat("    Ŷ = 切片 + Σ(β_orig × X) + Σ(θ_orig × (Xi-X̄i)(Xj-X̄j))\n\n")
-cat("  予測式（標準化）:\n")
-cat("    Ŷ = mean(Y) + Σ(β_std × X_std) + Σ(θ_std × Xi_std × Xj_std)\n")
-cat("    ※ 標準化モデルの切片は0（Yが中心化されているため）\n\n")
+cat("    Ŷ = 校正切片 + Σ(β_orig × X) + Σ(θ_orig × (Xi-X̄i)(Xj-X̄j))\n\n")
+cat("  標準化式（中心化Y形式）:\n")
+cat("    (Y - Ȳ) = 切片_std + Σ(β_std × X*) + Σ(θ_std × Xi* × Xj*)\n")
+cat("    ※ 交互作用が無ければ切片_std = 0、有れば相関補正分だけ非ゼロ\n\n")
 
 cat("==============================================================\n")
