@@ -928,6 +928,14 @@ run_hiernet_analysis <- function(
   }
 
   # Interaction matrix (standardized)
+  # hierNet's fitted model is ŷ = b0 + xβ + (1/2)x^T Θ x (Bien, Taylor &
+  # Tibshirani 2013, JASA - the hierNet reference). Θ is symmetric, so for
+  # i≠j the (1/2)(Θ_ij + Θ_ji) terms combine to exactly Θ_ij per pair, but
+  # the DIAGONAL keeps its 1/2: the effective coefficient of (Xi-X̄i)² in the
+  # displayed equation is th[i,i]/2, not th[i,i]. This halving is applied
+  # once, here, so every downstream use (equation, table, heatmap, the
+  # self-check below) can treat off-diagonal and diagonal identically as
+  # "coefficient × term" without special-casing.
   interaction_matrix_std <- final_fit$th
   if (is.null(interaction_matrix_std)) {
     interaction_matrix_std <- matrix(0, nrow = p, ncol = p)
@@ -938,6 +946,7 @@ run_hiernet_analysis <- function(
     warn_msgs <- c(warn_msgs, "交互作用係数にNaN/Infが含まれていたため0に置換しました")
     interaction_matrix_std[!is.finite(interaction_matrix_std)] <- 0
   }
+  diag(interaction_matrix_std) <- diag(interaction_matrix_std) / 2
   # Safety: with diagonal=FALSE hierNet already returns 0 diagonal; enforce anyway
   if (!include_diagonal) {
     diag(interaction_matrix_std) <- 0
@@ -963,16 +972,18 @@ run_hiernet_analysis <- function(
   # --------------------------------------------------------------------------
   # Displayed equation (original scale):
   #   ŷ = intercept + Σ β_orig×X + Σ_{i<j} θ_ij×(Xi-X̄i)(Xj-X̄j) + Σ θ_ii×(Xi-X̄i)²
-  # hierNet centers its internal interaction features, so the exact intercept
-  # includes a -Σθ×Cov(Xi,Xj) term (the mean of a centered product is the
-  # covariance, NOT zero). Rather than depending on package internals, the
-  # intercept is calibrated empirically so the displayed equation reproduces
-  # predict() exactly, and the match is verified (equation self-check).
+  # (θ_ii already halved above). hierNet centers its internal interaction
+  # features, so the exact intercept includes a -Σθ×Cov(Xi,Xj) term (the mean
+  # of a centered product is the covariance, NOT zero). Rather than depending
+  # further on package internals, the intercept is calibrated empirically so
+  # the displayed equation reproduces predict() exactly, and the match is
+  # verified (equation self-check) as a safety net against version/convention
+  # differences in hierNet itself.
 
   Xc <- sweep(X, 2, mx)
 
-  # Non-intercept part of the displayed equation, given a pairwise coefficient
-  # matrix (upper triangle incl. diagonal defines the equation terms)
+  # Non-intercept part of the displayed equation (matrix already holds the
+  # correct effective coefficient for every cell, diagonal included)
   eq_linear_predictor <- function(theta_orig) {
     lp <- as.vector(X %*% main_effects_orig)
     for (i in seq_len(p)) {
@@ -986,51 +997,27 @@ run_hiernet_analysis <- function(
     lp
   }
 
-  th_orig_raw <- interaction_matrix_std / outer(sx, sx)
-  th_orig_raw[!is.finite(th_orig_raw)] <- 0
-
-  # hierNet's th convention (pair effect = th[i,j], or th[i,j]+th[j,i]) is
-  # verified empirically: the correct convention makes (predict() - equation)
-  # constant across all observations
-  th_sum <- th_orig_raw + t(th_orig_raw)
-  diag(th_sum) <- diag(th_orig_raw)
-  candidates <- list(upper = th_orig_raw, sum = th_sum)
-
-  eq_tol <- 1e-6 * (sd(y) + 1)
-  best <- NULL
-  for (nm in names(candidates)) {
-    lp <- eq_linear_predictor(candidates[[nm]])
-    d <- predictions - lp
-    d_sd <- if (all(is.finite(d))) sd(d) else Inf
-    if (is.na(d_sd)) d_sd <- Inf
-    if (is.null(best) || d_sd < best$sd) {
-      best <- list(name = nm, theta = candidates[[nm]], sd = d_sd,
-                   mean = mean(d[is.finite(d)]))
-    }
-  }
-
-  equation_ok <- is.finite(best$sd) && best$sd <= eq_tol
-  if (!equation_ok) {
-    warn_msgs <- c(warn_msgs, sprintf(
-      "回帰式セルフチェック: 表示式とモデル予測の偏差(SD=%.3g)が許容値を超えています。式は近似値として扱ってください",
-      best$sd
-    ))
-  }
-
-  # Adopt the verified convention; symmetrize for display (heatmap etc.)
-  interaction_matrix_orig <- best$theta
-  interaction_matrix_orig[lower.tri(interaction_matrix_orig)] <-
-    t(interaction_matrix_orig)[lower.tri(interaction_matrix_orig)]
+  interaction_matrix_orig <- interaction_matrix_std / outer(sx, sx)
+  interaction_matrix_orig[!is.finite(interaction_matrix_orig)] <- 0
   rownames(interaction_matrix_orig) <- colnames(X)
   colnames(interaction_matrix_orig) <- colnames(X)
 
-  # Keep the standardized matrix consistent with the calibrated convention
-  interaction_matrix_std <- interaction_matrix_orig * outer(sx, sx)
-  rownames(interaction_matrix_std) <- colnames(X)
-  colnames(interaction_matrix_std) <- colnames(X)
+  lp <- eq_linear_predictor(interaction_matrix_orig)
+  d <- predictions - lp
+  d_sd <- if (all(is.finite(d))) sd(d) else Inf
+  if (is.na(d_sd)) d_sd <- Inf
+
+  eq_tol <- 1e-6 * (sd(y) + 1)
+  equation_ok <- is.finite(d_sd) && d_sd <= eq_tol
+  if (!equation_ok) {
+    warn_msgs <- c(warn_msgs, sprintf(
+      "回帰式セルフチェック: 表示式とモデル予測の偏差(SD=%.3g)が許容値を超えています。式は近似値として扱ってください",
+      d_sd
+    ))
+  }
 
   # Exact intercept: constant offset that makes the equation reproduce predict()
-  intercept_orig <- best$mean
+  intercept_orig <- mean(d[is.finite(d)])
   if (!is.finite(intercept_orig)) {
     intercept_orig <- mean_y - sum(main_effects_orig * mx)
     if (!is.finite(intercept_orig)) intercept_orig <- 0
@@ -1062,8 +1049,7 @@ run_hiernet_analysis <- function(
     mx = mx,
     sx = sx,
     # Equation self-check result
-    equation_check = list(ok = equation_ok, deviation_sd = best$sd,
-                          convention = best$name),
+    equation_check = list(ok = equation_ok, deviation_sd = d_sd),
     # Warnings to surface in the UI
     warnings = warn_msgs,
     # Legacy compatibility (default to standardized)
