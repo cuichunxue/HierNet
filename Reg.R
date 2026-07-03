@@ -487,11 +487,16 @@ validate_data <- function(X, y) {
 }
 
 #' Extract interaction coefficients as a tidy data frame (vectorized)
-#' @param int_mat Interaction matrix from hierNet
+#' @param int_mat Interaction matrix (display values, e.g. OLS-refit-derived)
 #' @param var_names Variable names
-#' @param threshold Minimum absolute value to include
+#' @param threshold Minimum absolute value to include (used only when active_mask is NULL)
+#' @param active_mask Optional logical matrix (same shape as int_mat): which
+#'   cells hierNet actually selected. Preferred over thresholding int_mat
+#'   directly, since int_mat's display values may carry small refit noise
+#'   on terms hierNet zeroed exactly.
 #' @return Data frame of interactions (always has var1, var2, coefficient columns)
-extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHOLD) {
+extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHOLD,
+                                 active_mask = NULL) {
   # Return properly structured empty data.frame
 
   empty_result <- data.frame(
@@ -508,8 +513,11 @@ extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHO
   idx <- which(upper.tri(int_mat, diag = TRUE), arr.ind = TRUE)
   coefficients <- int_mat[upper.tri(int_mat, diag = TRUE)]
 
-  # Filter by threshold
-  keep <- abs(coefficients) > threshold
+  keep <- if (!is.null(active_mask)) {
+    active_mask[upper.tri(active_mask, diag = TRUE)]
+  } else {
+    abs(coefficients) > threshold
+  }
 
   if (!any(keep)) return(empty_result)
 
@@ -524,13 +532,18 @@ extract_interactions <- function(int_mat, var_names, threshold = DISPLAY_THRESHO
 
 #' Build regression equation string
 #' @param intercept Intercept value
-#' @param main_effects Named vector of main effects
-#' @param int_mat Interaction matrix
+#' @param main_effects Named vector of main effects (display values)
+#' @param int_mat Interaction matrix (display values)
 #' @param var_names Variable names
 #' @param target_name Target variable name
+#' @param main_active Optional logical vector: which main effects hierNet
+#'   selected. Preferred over thresholding main_effects directly.
+#' @param int_active Optional logical matrix: which interaction/quadratic
+#'   terms hierNet selected. Preferred over thresholding int_mat directly.
 #' @return Character string of equation
 build_equation <- function(intercept, main_effects, int_mat, var_names, target_name,
-                          scale = "original", mx = NULL) {
+                          scale = "original", mx = NULL,
+                          main_active = NULL, int_active = NULL) {
   # For standardized scale, intercept is 0 (Y is centered), so don't display it
   # For original scale, always show intercept
   if (abs(intercept) < DISPLAY_THRESHOLD) {
@@ -541,8 +554,10 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
     first_term <- FALSE
   }
 
-  # Main effects (NOT centered for original scale)
-  active_main <- abs(main_effects) > DISPLAY_THRESHOLD
+  # Main effects (NOT centered for original scale). Prefer hierNet's own
+  # selection mask over thresholding the (OLS-refit) display value, since a
+  # term hierNet zeroed exactly can carry small refit noise.
+  active_main <- if (!is.null(main_active)) main_active else abs(main_effects) > DISPLAY_THRESHOLD
   for (i in which(active_main)) {
     coef <- main_effects[i]
     var_name <- names(main_effects)[i]
@@ -562,7 +577,8 @@ build_equation <- function(intercept, main_effects, int_mat, var_names, target_n
   }
 
   # Interactions and quadratic terms (centered for original scale only)
-  interactions <- extract_interactions(int_mat, var_names, DISPLAY_THRESHOLD)
+  interactions <- extract_interactions(int_mat, var_names, DISPLAY_THRESHOLD,
+                                       active_mask = int_active)
   for (i in seq_len(nrow(interactions))) {
     coef <- interactions$coefficient[i]
     v1 <- interactions$var1[i]
@@ -669,15 +685,15 @@ compute_metrics <- function(y, predictions, n_params) {
   )
 }
 
-#' Count active coefficients
-#' @param main_effects Main effect vector
-#' @param int_mat Interaction matrix
+#' Count active coefficients from hierNet's own active/support masks
+#' @param main_active Logical vector: which main effects hierNet selected
+#' @param int_active Logical matrix: which interaction/quadratic terms hierNet selected
 #' @return List with counts
-count_active_coefficients <- function(main_effects, int_mat) {
+count_active_coefficients <- function(main_active, int_active) {
   list(
-    n_main = sum(abs(main_effects) > COEF_ZERO_THRESHOLD),
-    n_interaction = sum(abs(int_mat[upper.tri(int_mat)]) > COEF_ZERO_THRESHOLD),
-    n_quadratic = sum(abs(diag(int_mat)) > COEF_ZERO_THRESHOLD)
+    n_main = sum(main_active),
+    n_interaction = sum(int_active[upper.tri(int_active)]),
+    n_quadratic = sum(diag(int_active))
   )
 }
 
@@ -850,7 +866,15 @@ run_hiernet_analysis <- function(
   )
 
   # Cross-validation (seeded so fold assignment and lambda selection are reproducible)
-  if (!is.null(seed) && is.finite(seed)) set.seed(as.integer(seed))
+  seed_valid <- !is.null(seed) && is.finite(seed) &&
+    seed >= 1 && seed <= .Machine$integer.max
+  if (seed_valid) {
+    set.seed(as.integer(seed))
+  } else if (!is.null(seed)) {
+    # seed was supplied (e.g. cleared to NA, or out of R's integer range) but
+    # unusable — surface this rather than silently skipping reproducibility
+    warn_msgs <- c(warn_msgs, "乱数シードが無効なため、再現性は保証されません（結果は実行のたびに変わる可能性があります）")
+  }
   cv_fit <- tryCatch(
     hierNet.cv(
       fit = path_fit,
@@ -870,10 +894,16 @@ run_hiernet_analysis <- function(
   }
 
   # CV error at the selected lambda: honest out-of-sample performance estimate
-  # (in-sample R²/RMSE are optimistic)
+  # (in-sample R²/RMSE are optimistic). hierNet.cv returns the CV curve as
+  # $lamlist/$cv (mean squared error), NOT $cv.err (that field doesn't exist).
   cv_rmse <- tryCatch({
-    idx <- which.min(abs(cv_fit$lamlist - best_lambda))
-    sqrt(cv_fit$cv.err[idx])
+    if (is.null(cv_fit$lamlist) || is.null(cv_fit$cv) ||
+        length(cv_fit$lamlist) == 0 || length(cv_fit$lamlist) != length(cv_fit$cv)) {
+      NA_real_
+    } else {
+      idx <- which.min(abs(cv_fit$lamlist - best_lambda))
+      sqrt(cv_fit$cv[idx])
+    }
   }, error = function(e) NA_real_)
 
   # Final model with optimal lambda
@@ -911,8 +941,14 @@ run_hiernet_analysis <- function(
   p <- ncol(X)
   mean_y <- mean(y, na.rm = TRUE)
 
-  # Raw hierNet coefficients, kept only to detect gross fitting failures
-  # (NaN/Inf) — the values actually displayed are re-derived below.
+  # Raw hierNet coefficients. These are what actually went through LASSO-style
+  # sparsity (exactly 0 for terms hierNet did not select), so they — not the
+  # displayed OLS-refit values below — are the correct basis for "is this
+  # term active" decisions. The OLS refit reproduces predict() only up to the
+  # solver's own numerical tolerance, so a term hierNet zeroed can come back
+  # from the refit as O(1e-4)-O(1e-3) noise rather than exact 0; thresholding
+  # the refit's *displayed* magnitude against COEF_ZERO_THRESHOLD (1e-8) would
+  # misclassify that noise as "selected."
   main_effects_std_raw <- final_fit$bp - final_fit$bn
   if (any(!is.finite(main_effects_std_raw))) {
     warn_msgs <- c(warn_msgs, "標準化係数にNaN/Infが含まれていました")
@@ -925,6 +961,14 @@ run_hiernet_analysis <- function(
     warn_msgs <- c(warn_msgs, "交互作用係数にNaN/Infが含まれていました")
   }
 
+  main_effects_active <- abs(main_effects_std_raw) > COEF_ZERO_THRESHOLD
+  main_effects_active[!is.finite(main_effects_active)] <- FALSE
+  names(main_effects_active) <- colnames(X)
+  interaction_matrix_active <- abs(interaction_matrix_th_raw) > COEF_ZERO_THRESHOLD
+  interaction_matrix_active[!is.finite(interaction_matrix_active)] <- FALSE
+  if (!include_diagonal) diag(interaction_matrix_active) <- FALSE
+  dimnames(interaction_matrix_active) <- list(colnames(X), colnames(X))
+
   # Predictions come from hierNet itself: the authoritative model output.
   # Metrics (R², RMSE, ...) are computed against these, so they always
   # reflect the actually fitted model.
@@ -935,8 +979,12 @@ run_hiernet_analysis <- function(
       as.vector(final_fit$yhat)
     }
   )
-  if (any(!is.finite(predictions))) {
-    warn_msgs <- c(warn_msgs, "予測値にNaN/Infが含まれていたため平均値で補完しました")
+  n_bad_predictions <- sum(!is.finite(predictions))
+  if (n_bad_predictions > 0) {
+    warn_msgs <- c(warn_msgs, sprintf(
+      "予測値のうち%d件にNaN/Infが含まれていたため平均値で補完しました。モデルが不安定な可能性があります",
+      n_bad_predictions
+    ))
     predictions[!is.finite(predictions)] <- mean_y
   }
 
@@ -969,20 +1017,43 @@ run_hiernet_analysis <- function(
   n_terms <- nrow(tri_idx)
 
   extra <- if (n_terms > 0) {
-    m <- matrix(0, nrow(X), n_terms)
-    for (k in seq_len(n_terms)) {
-      i <- tri_idx[k, 1]; j <- tri_idx[k, 2]
-      m[, k] <- if (i == j) Xc[, i]^2 else Xc[, i] * Xc[, j]
-    }
-    m
+    Xc[, tri_idx[, 1], drop = FALSE] * Xc[, tri_idx[, 2], drop = FALSE]
   } else {
     matrix(0, nrow(X), 0)
   }
 
   design <- cbind(Intercept = 1, X, extra)
+
+  # lm.fit does NOT error on a rank-deficient design (e.g. a <3-level variable
+  # under model_type="quadratic" makes its (Xi-X̄i)² exactly collinear with
+  # Xi, or two explanatory variables correlated above validate_data's 0.99
+  # warning-only threshold) — it silently returns NA for the aliased
+  # column(s). Dropping just those columns and refitting the reduced design
+  # keeps every well-identified coefficient on the accurate OLS-refit
+  # footing, instead of discarding the whole equation to the fallback
+  # formula over a single collinear term.
+  keep_cols <- seq_len(ncol(design))
   refit <- tryCatch(lm.fit(x = design, y = predictions), error = function(e) NULL)
-  refit_coefs <- if (!is.null(refit)) refit$coefficients else rep(NA_real_, ncol(design))
-  refit_succeeded <- !is.null(refit) && all(is.finite(refit_coefs))
+  n_dropped <- 0
+  while (!is.null(refit) && any(!is.finite(refit$coefficients)) && length(keep_cols) > 1) {
+    aliased <- !is.finite(refit$coefficients)
+    keep_cols <- keep_cols[!aliased]
+    n_dropped <- n_dropped + sum(aliased)
+    refit <- tryCatch(lm.fit(x = design[, keep_cols, drop = FALSE], y = predictions),
+                      error = function(e) NULL)
+  }
+  refit_succeeded <- !is.null(refit) && all(is.finite(refit$coefficients))
+  if (refit_succeeded && n_dropped > 0) {
+    warn_msgs <- c(warn_msgs, sprintf(
+      "多重共線性のため%d項を除外して式を再フィットしました（該当項は0として扱われます）",
+      n_dropped
+    ))
+  }
+  # Aliased/dropped columns are reported as 0 (their effect is already fully
+  # absorbed by the correlated column that was kept), not NA — so a single
+  # collinear term never propagates missing values into the display.
+  refit_coefs <- rep(0, ncol(design))
+  if (refit_succeeded) refit_coefs[keep_cols] <- refit$coefficients
 
   # hierNet's fit comes from an iterative solver (ADMM/coordinate descent)
   # converged to a numerical TOLERANCE (default tol=1e-5), not an exact
@@ -1011,11 +1082,8 @@ run_hiernet_analysis <- function(
     interaction_matrix_orig <- matrix(0, p, p, dimnames = list(colnames(X), colnames(X)))
     if (n_terms > 0) {
       theta_vals <- refit_coefs[(p + 2):(p + 1 + n_terms)]
-      for (k in seq_len(n_terms)) {
-        i <- tri_idx[k, 1]; j <- tri_idx[k, 2]
-        interaction_matrix_orig[i, j] <- theta_vals[k]
-        interaction_matrix_orig[j, i] <- theta_vals[k]
-      }
+      interaction_matrix_orig[tri_idx] <- theta_vals
+      interaction_matrix_orig[tri_idx[, 2:1, drop = FALSE]] <- theta_vals
     }
   } else {
     # Fallback: naive conversion, only when the refit itself fails outright
@@ -1033,8 +1101,15 @@ run_hiernet_analysis <- function(
     if (!is.finite(intercept_orig)) intercept_orig <- 0
   }
 
-  equation_ok <- refit_succeeded && is.finite(refit_r2) && refit_r2 >= 0.999
-  if (refit_succeeded && !equation_ok) {
+  # A refit against a degenerate (near-constant, post NaN/Inf repair)
+  # `predictions` vector can trivially reach R²≈1 (ss_tot≈0) even though the
+  # underlying model fit catastrophically failed — never report success in
+  # that case, regardless of the refit's own R².
+  equation_ok <- refit_succeeded && n_bad_predictions == 0 &&
+    is.finite(refit_r2) && refit_r2 >= 0.999
+  if (n_bad_predictions > 0) {
+    warn_msgs <- c(warn_msgs, "回帰式セルフチェック: 予測値が不正だったため式の正確性を保証できません")
+  } else if (refit_succeeded && !equation_ok) {
     warn_msgs <- c(warn_msgs, sprintf(
       "回帰式セルフチェック: 表示式がpredict()の分散の%.2f%%しか説明できていません。式は近似値として扱ってください",
       100 * max(refit_r2, 0)
@@ -1074,6 +1149,10 @@ run_hiernet_analysis <- function(
     # Scaling info
     mx = mx,
     sx = sx,
+    # Which terms hierNet actually selected (LASSO-exact sparsity, used for
+    # "選択" indicators and active-term counts — NOT for display magnitudes)
+    main_effects_active = main_effects_active,
+    interaction_matrix_active = interaction_matrix_active,
     # Equation self-check result: whether the OLS refit against predict()
     # explains essentially all of its variance (small residuals are expected
     # from hierNet's iterative solver tolerance, not necessarily a bug)
@@ -1081,11 +1160,7 @@ run_hiernet_analysis <- function(
                           r_squared = refit_r2),
     # Warnings to surface in the UI
     warnings = warn_msgs,
-    # Legacy compatibility (default to standardized)
-    main_effects = main_effects_std,
-    interaction_matrix = interaction_matrix_std,
-    predictions = predictions,
-    intercept = intercept_orig
+    predictions = predictions
   )
 }
 
@@ -1238,7 +1313,8 @@ ui <- fluidPage(
                 hr(style = sprintf("border-color: %s;", COLORS$border)),
                 sliderInput("nlam", "Lambda候補数", min = 10, max = 50, value = 20, step = 5),
                 sliderInput("nfolds", "交差検証フォールド数", min = 3, max = 10, value = 5, step = 1),
-                numericInput("cv_seed", "乱数シード（再現性の確保）", value = 42, min = 1, step = 1),
+                numericInput("cv_seed", "乱数シード（再現性の確保）",
+                             value = 42, min = 1, max = 2147483647, step = 1),
                 actionButton("run_analysis", "分析実行", class = "btn-analysis", icon = icon("play"))
               )
             )
@@ -1290,6 +1366,7 @@ ui <- fluidPage(
                   )
                 ),
                 div(class = "equation-display", uiOutput("equation_display")),
+                uiOutput("equation_check_badge"),
                 p(
                   style = sprintf("color: %s; font-size: 0.75rem; margin: 0.5rem 0;", COLORS$text_muted),
                   uiOutput("scale_description")
@@ -1622,10 +1699,12 @@ server <- function(input, output, session) {
 
         incProgress(0.40, detail = "評価指標計算中")
 
-        # Compute metrics
+        # Compute metrics (active-term counts use hierNet's own selection,
+        # not the OLS-refit display values — see main_effects_active/
+        # interaction_matrix_active in run_hiernet_analysis)
         active_counts <- count_active_coefficients(
-          analysis_result$main_effects,
-          analysis_result$interaction_matrix
+          analysis_result$main_effects_active,
+          analysis_result$interaction_matrix_active
         )
 
         n_params <- active_counts$n_main + active_counts$n_interaction +
@@ -1662,10 +1741,9 @@ server <- function(input, output, session) {
           # Scaling info
           mx = analysis_result$mx,
           sx = analysis_result$sx,
-          # Legacy fields
-          intercept = analysis_result$intercept,
-          main_effects = analysis_result$main_effects,
-          interaction_matrix = analysis_result$interaction_matrix,
+          # Which terms hierNet actually selected (for "選択" indicators)
+          main_effects_active = analysis_result$main_effects_active,
+          interaction_matrix_active = analysis_result$interaction_matrix_active,
           # Model info
           fit = analysis_result$fit,
           cv_fit = analysis_result$cv_fit,
@@ -1785,15 +1863,17 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale (with fallback)
+    # Select coefficients based on scale (main_effects_orig/std and
+    # interaction_matrix_orig/std are always populated by
+    # run_hiernet_analysis, so no cross-scale fallback is needed here)
     if (scale == "original") {
-      intercept <- res$intercept_orig %||% res$intercept %||% 0
-      main_effects <- res$main_effects_orig %||% res$main_effects
-      interaction_matrix <- res$interaction_matrix_orig %||% res$interaction_matrix
+      intercept <- res$intercept_orig %||% 0
+      main_effects <- res$main_effects_orig
+      interaction_matrix <- res$interaction_matrix_orig
     } else {
-      intercept <- res$intercept_std %||% res$intercept %||% 0
-      main_effects <- res$main_effects_std %||% res$main_effects
-      interaction_matrix <- res$interaction_matrix_std %||% res$interaction_matrix
+      intercept <- res$intercept_std %||% 0
+      main_effects <- res$main_effects_std
+      interaction_matrix <- res$interaction_matrix_std
     }
 
     # Ensure intercept is numeric
@@ -1814,9 +1894,37 @@ server <- function(input, output, session) {
       res$var_names,
       target_name,
       scale = scale,
-      mx = res$mx
+      mx = res$mx,
+      main_active = res$main_effects_active,
+      int_active = res$interaction_matrix_active
     )
     HTML(equation)
+  })
+
+  # -------------------------------------------------------------------------
+  # Equation self-check badge (persistent — survives tab switches, unlike the
+  # transient showNotification shown once at analysis time)
+  # -------------------------------------------------------------------------
+
+  output$equation_check_badge <- renderUI({
+    req(rv$analysis)
+    check <- rv$analysis$equation_check
+    if (is.null(check)) return(NULL)
+
+    if (isTRUE(check$ok)) {
+      div(
+        style = sprintf("color: %s; font-size: 0.75rem; margin-top: 0.25rem;", COLORS$accent_green),
+        sprintf("✓ 検証済み: この式はモデルの予測を再現します（説明分散 %.3f%%）",
+                100 * (check$r_squared %||% 1))
+      )
+    } else {
+      div(
+        style = sprintf("color: %s; font-size: 0.75rem; margin-top: 0.25rem; font-weight: 600;",
+                        COLORS$accent_orange),
+        sprintf("⚠ 近似値: この式はモデルの予測と完全には一致していません（説明分散 %.3f%%）。参考値として扱ってください",
+                100 * max(check$r_squared %||% 0, 0))
+      )
+    }
   })
 
   # -------------------------------------------------------------------------
@@ -1828,41 +1936,50 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale (with fallback)
+    # main_effects_orig/std and interaction_matrix_orig/std are always
+    # populated by run_hiernet_analysis, so no cross-scale fallback is needed
     if (scale == "original") {
-      main_effects <- res$main_effects_orig %||% res$main_effects
-      interaction_matrix <- res$interaction_matrix_orig %||% res$interaction_matrix
+      main_effects <- res$main_effects_orig
+      interaction_matrix <- res$interaction_matrix_orig
     } else {
-      main_effects <- res$main_effects_std %||% res$main_effects
-      interaction_matrix <- res$interaction_matrix_std %||% res$interaction_matrix
+      main_effects <- res$main_effects_std
+      interaction_matrix <- res$interaction_matrix_std
     }
 
     # Ensure numeric
     main_effects <- as.numeric(main_effects)
     names(main_effects) <- res$var_names
+    main_active <- res$main_effects_active
 
-    # Main effects
+    # Main effects. "選択" reflects hierNet's own selection (main_active),
+    # not a threshold on the displayed (OLS-refit) value, since a term
+    # hierNet zeroed exactly can carry small refit noise.
     main_df <- data.frame(
       変数 = names(main_effects),
       係数 = main_effects,
       タイプ = "主効果",
-      選択 = ifelse(abs(main_effects) > DISPLAY_THRESHOLD, "✓", ""),
+      選択 = ifelse(main_active[names(main_effects)], "✓", ""),
       stringsAsFactors = FALSE
     )
 
-    # Interactions (using utility function)
-    interactions <- extract_interactions(interaction_matrix, res$var_names, 0)
+    # Interactions (using utility function). Row inclusion is still
+    # magnitude-based (DISPLAY_THRESHOLD) so the table doesn't fill with
+    # negligible refit noise on terms hierNet zeroed; "選択" is mask-based.
+    interactions <- extract_interactions(interaction_matrix, res$var_names, DISPLAY_THRESHOLD)
 
     if (nrow(interactions) > 0) {
       # Distinguish between quadratic (var1 == var2) and interaction (var1 != var2)
       is_quadratic <- interactions$var1 == interactions$var2
+      int_active <- res$interaction_matrix_active
+      selected <- mapply(function(v1, v2) isTRUE(int_active[v1, v2]),
+                        interactions$var1, interactions$var2)
       int_df <- data.frame(
         変数 = ifelse(is_quadratic,
                      paste0(interactions$var1, "²"),
                      paste0(interactions$var1, " × ", interactions$var2)),
         係数 = interactions$coefficient,
         タイプ = ifelse(is_quadratic, "2次項", "交互作用"),
-        選択 = ifelse(abs(interactions$coefficient) > DISPLAY_THRESHOLD, "✓", ""),
+        選択 = ifelse(selected, "✓", ""),
         stringsAsFactors = FALSE
       )
       coef_df <- rbind(main_df, int_df)
@@ -2052,11 +2169,11 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale (with fallback)
+    # main_effects_orig/std always populated by run_hiernet_analysis
     if (scale == "original") {
-      main_effects <- res$main_effects_orig %||% res$main_effects
+      main_effects <- res$main_effects_orig
     } else {
-      main_effects <- res$main_effects_std %||% res$main_effects
+      main_effects <- res$main_effects_std
     }
     x_label <- if (scale == "original") "係数 (元単位)" else "係数 (標準化)"
 
@@ -2093,11 +2210,11 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale (with fallback)
+    # interaction_matrix_orig/std always populated by run_hiernet_analysis
     if (scale == "original") {
-      int_mat <- res$interaction_matrix_orig %||% res$interaction_matrix
+      int_mat <- res$interaction_matrix_orig
     } else {
-      int_mat <- res$interaction_matrix_std %||% res$interaction_matrix
+      int_mat <- res$interaction_matrix_std
     }
     var_names <- res$var_names
     legend_title <- if (scale == "original") "係数\n(元単位)" else "係数\n(標準化)"
@@ -2142,11 +2259,11 @@ server <- function(input, output, session) {
     res <- rv$analysis
     scale <- input$coef_scale %||% "original"
 
-    # Select coefficients based on scale (with fallback)
+    # interaction_matrix_orig/std always populated by run_hiernet_analysis
     if (scale == "original") {
-      interaction_matrix <- res$interaction_matrix_orig %||% res$interaction_matrix
+      interaction_matrix <- res$interaction_matrix_orig
     } else {
-      interaction_matrix <- res$interaction_matrix_std %||% res$interaction_matrix
+      interaction_matrix <- res$interaction_matrix_std
     }
 
     int_df <- extract_interactions(interaction_matrix, res$var_names, DISPLAY_THRESHOLD)

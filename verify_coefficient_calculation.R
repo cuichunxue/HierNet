@@ -53,30 +53,47 @@ run_check <- function(label, fit, X, y, true_desc, include_diagonal = TRUE) {
   n_terms <- nrow(tri_idx)
 
   extra <- if (n_terms > 0) {
-    m <- matrix(0, nrow(X), n_terms)
-    for (k in seq_len(n_terms)) {
-      i <- tri_idx[k, 1]; j <- tri_idx[k, 2]
-      m[, k] <- if (i == j) Xc[, i]^2 else Xc[, i] * Xc[, j]
-    }
-    m
+    Xc[, tri_idx[, 1], drop = FALSE] * Xc[, tri_idx[, 2], drop = FALSE]
   } else {
     matrix(0, nrow(X), 0)
   }
 
   design <- cbind(Intercept = 1, X, extra)
-  refit <- lm.fit(x = design, y = pred_hiernet)
-  coefs <- refit$coefficients
+
+  # lm.fit does NOT error on a rank-deficient design (e.g. exact collinearity
+  # between a quadratic term and a <3-level variable) — it silently returns
+  # NA for the aliased column(s). Mirror Reg.R's guard: drop aliased columns
+  # and refit the reduced design, rather than trusting possibly-NA coefficients.
+  keep_cols <- seq_len(ncol(design))
+  refit <- tryCatch(lm.fit(x = design, y = pred_hiernet), error = function(e) NULL)
+  n_dropped <- 0
+  while (!is.null(refit) && any(!is.finite(refit$coefficients)) && length(keep_cols) > 1) {
+    aliased <- !is.finite(refit$coefficients)
+    keep_cols <- keep_cols[!aliased]
+    n_dropped <- n_dropped + sum(aliased)
+    refit <- tryCatch(lm.fit(x = design[, keep_cols, drop = FALSE], y = pred_hiernet),
+                      error = function(e) NULL)
+  }
+  refit_ok <- !is.null(refit) && all(is.finite(refit$coefficients))
+
+  if (!refit_ok) {
+    cat(sprintf("【%s】\n", label))
+    cat(true_desc)
+    cat("  ✗ lm.fitが失敗またはNAを返しました（計画行列を確認してください）\n\n")
+    return(list(pass = FALSE, r2 = NA_real_, max_diff = NA_real_,
+               beta_orig = NULL, theta_orig = NULL, intercept = NA_real_))
+  }
+
+  coefs <- rep(0, ncol(design))
+  coefs[keep_cols] <- refit$coefficients
 
   intercept_orig <- coefs[1]
   beta_orig <- coefs[2:(p + 1)]
   theta_orig <- matrix(0, p, p, dimnames = list(colnames(X), colnames(X)))
   if (n_terms > 0) {
     theta_vals <- coefs[(p + 2):(p + 1 + n_terms)]
-    for (k in seq_len(n_terms)) {
-      i <- tri_idx[k, 1]; j <- tri_idx[k, 2]
-      theta_orig[i, j] <- theta_vals[k]
-      theta_orig[j, i] <- theta_vals[k]
-    }
+    theta_orig[tri_idx] <- theta_vals
+    theta_orig[tri_idx[, 2:1, drop = FALSE]] <- theta_vals
   }
 
   ss_res <- sum(refit$residuals^2)
@@ -86,6 +103,9 @@ run_check <- function(label, fit, X, y, true_desc, include_diagonal = TRUE) {
 
   cat(sprintf("【%s】\n", label))
   cat(true_desc)
+  if (n_dropped > 0) {
+    cat(sprintf("  ※ 多重共線性のため%d項を除外して再フィットしました\n", n_dropped))
+  }
   cat(sprintf("  切片(実測校正) = %.4f\n", intercept_orig))
   cat(sprintf("  OLS再フィットのR² (predict()の分散を説明できた割合) = %.8f\n", r2))
   cat(sprintf("  hierNet vs 手動(OLS再フィット): max|diff| = %.4e\n\n", max_diff))
