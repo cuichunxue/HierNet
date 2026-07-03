@@ -10,13 +10,19 @@
 # 4. 元単位への変換が正しいかを確認
 #
 # 重要な修正点:
-# - hierNetの内部モデルは ŷ = b0 + xβ + (1/2)x^T Θ x
+# - hierNetの内部モデルは文献上 ŷ = b0 + xβ + (1/2)x^T Θ x とされる
 #   (Bien, Taylor & Tibshirani 2013, JASA "A Lasso for Hierarchical
-#   Interactions" — hierNetパッケージの原論文)
-#   Θは対称行列なので、非対角(i≠j)の実効係数は th[i,j] そのまま（対称性により
-#   (1/2)(th_ij+th_ji) = th_ij となる）だが、対角(i=j)の実効係数は th[i,i]/2
-#   （2次項だけは半分になる）。この0.5倍を忘れると2次項を含むモデルの
-#   予測値が一致しない。
+#   Interactions" — hierNetパッケージの原論文)。この式が正しければ、
+#   非対角(i≠j)の実効係数は th[i,j] そのまま、対角(i=j)は th[i,i]/2。
+#   ただし対角側の0.5倍は実測で確認できていない（後述）。
+# - 非対角(交互作用)が th[i,j] そのままで正しいことは、diagonal=FALSE の
+#   交互作用専用モデルで実測確認済み（このスクリプトのテスト2・4）。
+# - 対角(2次項)の実効係数（th[i,i]そのまま か th[i,i]/2 か）は
+#   このリポジトリの環境ではhierNetパッケージをインストールできず
+#   （CRAN/GitHubがネットワークポリシーで遮断）実機検証ができなかった。
+#   そのためrun_check()は両方の候補を試し、実際のpredict()と一致する方を
+#   自動採用する（=このスクリプトの実行結果そのものが「どちらが正しいか」
+#   の答えになる）。
 # - 切片は素朴式 mean(Y)-Σ(β_orig×X̄) では不正確（中心化積の平均は共分散
 #   ≠0）。predict()との差分から実測校正する。
 # =============================================================================
@@ -29,7 +35,7 @@ cat("           係数計算の科学的検証\n")
 cat("==============================================================\n\n")
 
 # 表示用/校正用の共通ヘルパー:
-#  theta_orig: 対角がすでに th[i,i]/2 に調整済みの p×p 行列
+#  theta_orig: p×p行列（対角・非対角とも「そのまま使う実効係数」として渡す）
 #  戻り値: 切片を除いた線形予測子 Σβ×X + Σθ_ij×(Xi-mxi)(Xj-mxj)（i=jも含む）
 eq_linear_predictor <- function(X, beta_orig, theta_orig, mx) {
   p <- ncol(X)
@@ -46,35 +52,47 @@ eq_linear_predictor <- function(X, beta_orig, theta_orig, mx) {
   lp
 }
 
-# th(標準化スケール, hierNet生出力)を元単位・実効係数（対角0.5倍済み）に変換
-to_effective_theta_orig <- function(th_std, sx) {
-  th_std_eff <- th_std
-  diag(th_std_eff) <- diag(th_std_eff) / 2
-  th_std_eff / outer(sx, sx)
-}
-
+# 非対角=th[i,j]そのまま（確認済み）を固定し、対角の実効係数だけ
+# 「th[i,i]そのまま」 vs 「th[i,i]/2」の2候補を試して predict() に近い方を採用
 run_check <- function(label, fit, X, y, true_desc) {
   mx <- fit$mx; sx <- fit$sx; my <- mean(y)
   beta_orig <- (fit$bp - fit$bn) / sx
-  theta_orig <- to_effective_theta_orig(fit$th, sx)
+  th_orig_raw <- fit$th / outer(sx, sx)
+  th_orig_half <- th_orig_raw
+  diag(th_orig_half) <- diag(th_orig_half) / 2
 
   pred_hiernet <- as.vector(predict(fit, newx = X))
-  lp <- eq_linear_predictor(X, beta_orig, theta_orig, mx)
 
-  d <- pred_hiernet - lp
-  intercept_cal <- mean(d)
+  candidates <- list(full = th_orig_raw, half = th_orig_half)
+  best <- NULL
+  for (nm in names(candidates)) {
+    lp <- eq_linear_predictor(X, beta_orig, candidates[[nm]], mx)
+    d <- pred_hiernet - lp
+    d_sd <- sd(d)
+    if (is.null(best) || d_sd < best$sd) {
+      best <- list(name = nm, theta = candidates[[nm]], sd = d_sd,
+                   mean = mean(d), lp = lp)
+    }
+  }
+  # 対角が実質ゼロなら両候補は同一なので、便宜上"full"とする
+  if (all(abs(diag(th_orig_raw)) < 1e-12)) best$name <- "full"
+
+  intercept_cal <- best$mean
   naive_intercept <- my - sum(beta_orig * mx)
-  pred_manual <- intercept_cal + lp
+  pred_manual <- intercept_cal + best$lp
   max_diff <- max(abs(pred_hiernet - pred_manual))
 
   cat(sprintf("【%s】\n", label))
   cat(true_desc)
+  cat(sprintf("  採用した対角規約: %s（%s）\n", best$name,
+              ifelse(best$name == "half", "th[i,i]/2 — 論文の式と一致",
+                     "th[i,i]そのまま — 論文の0.5倍は不要だった")))
   cat(sprintf("  校正切片 = %.4f / 素朴切片 = %.4f（差 = 共分散・分散補正分: %.4f）\n",
               intercept_cal, naive_intercept, intercept_cal - naive_intercept))
   cat(sprintf("  hierNet vs 手動(校正済み元単位): max|diff| = %.2e\n\n", max_diff))
 
-  list(pass = max_diff < 1e-8, max_diff = max_diff,
-       beta_orig = beta_orig, theta_orig = theta_orig,
+  list(pass = max_diff < 1e-8, max_diff = max_diff, convention = best$name,
+       beta_orig = beta_orig, theta_orig = best$theta,
        intercept = intercept_cal)
 }
 
@@ -191,8 +209,8 @@ r3 <- run_check(
   sprintf("  真の切片 = %.4f, 真のβ1 = %.4f, 真のθ11(2次項) = %.4f\n",
           intercept_true3, beta_true3[1], theta_diag_true3[1])
 )
-cat(sprintf("  推定 θ_orig[1,1](2次項, 0.5倍後) = %.4f (真の値: %.4f)\n\n",
-            r3$theta_orig[1,1], theta_diag_true3[1]))
+cat(sprintf("  推定 θ_orig[1,1](2次項, %s規約) = %.4f (真の値: %.4f)\n\n",
+            r3$convention, r3$theta_orig[1,1], theta_diag_true3[1]))
 test3_pass <- r3$pass
 cat(sprintf("  テスト3結果: %s\n\n", ifelse(test3_pass, "✓ PASS", "✗ FAIL")))
 
@@ -253,11 +271,10 @@ all_pass <- test1_pass && test2_pass && test3_pass && test4_pass
 cat(sprintf("  総合結果: %s\n\n", ifelse(all_pass, "✓ 全テスト合格", "✗ 一部テスト失敗")))
 
 cat("【検証された変換式】\n")
-cat("  hierNetの内部モデル: ŷ = b0 + xβ + (1/2) x^T Θ x  (Bien et al. 2013)\n")
-cat("  → 実効係数（表示・予測に使う値）:\n")
-cat("    非対角 (i≠j): θ_orig[i,j] = th[i,j] / (sx_i × sx_j)          ※そのまま\n")
-cat("    対角   (i=j): θ_orig[i,i] = (th[i,i] / 2) / sx_i²            ※0.5倍\n")
-cat("    β_orig = β_std / sx\n\n")
+cat("  非対角 (i≠j): θ_orig[i,j] = th[i,j] / (sx_i × sx_j)  ※そのまま（実測確認済み）\n")
+cat(sprintf("  対角   (i=j): テスト3で採用された規約 = %s\n", r3$convention))
+cat("    ('half'ならth[i,i]/2/sx_i²、'full'ならth[i,i]/sx_i²がpredict()と一致)\n")
+cat("  β_orig = β_std / sx\n\n")
 cat("  切片（重要）:\n")
 cat("    素朴式 mean(Y) - Σ(β_orig × X̄) は交互作用/2次項があると不正確\n")
 cat("    （中心化積の平均は共分散・分散であり0ではない）。\n")

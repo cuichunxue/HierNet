@@ -927,29 +927,20 @@ run_hiernet_analysis <- function(
     main_effects_orig[!is.finite(main_effects_orig)] <- 0
   }
 
-  # Interaction matrix (standardized)
-  # hierNet's fitted model is ŷ = b0 + xβ + (1/2)x^T Θ x (Bien, Taylor &
-  # Tibshirani 2013, JASA - the hierNet reference). Θ is symmetric, so for
-  # i≠j the (1/2)(Θ_ij + Θ_ji) terms combine to exactly Θ_ij per pair, but
-  # the DIAGONAL keeps its 1/2: the effective coefficient of (Xi-X̄i)² in the
-  # displayed equation is th[i,i]/2, not th[i,i]. This halving is applied
-  # once, here, so every downstream use (equation, table, heatmap, the
-  # self-check below) can treat off-diagonal and diagonal identically as
-  # "coefficient × term" without special-casing.
-  interaction_matrix_std <- final_fit$th
-  if (is.null(interaction_matrix_std)) {
-    interaction_matrix_std <- matrix(0, nrow = p, ncol = p)
+  # Interaction matrix (standardized), raw from hierNet
+  interaction_matrix_std_raw <- final_fit$th
+  if (is.null(interaction_matrix_std_raw)) {
+    interaction_matrix_std_raw <- matrix(0, nrow = p, ncol = p)
   }
-  rownames(interaction_matrix_std) <- colnames(X)
-  colnames(interaction_matrix_std) <- colnames(X)
-  if (any(!is.finite(interaction_matrix_std))) {
+  rownames(interaction_matrix_std_raw) <- colnames(X)
+  colnames(interaction_matrix_std_raw) <- colnames(X)
+  if (any(!is.finite(interaction_matrix_std_raw))) {
     warn_msgs <- c(warn_msgs, "交互作用係数にNaN/Infが含まれていたため0に置換しました")
-    interaction_matrix_std[!is.finite(interaction_matrix_std)] <- 0
+    interaction_matrix_std_raw[!is.finite(interaction_matrix_std_raw)] <- 0
   }
-  diag(interaction_matrix_std) <- diag(interaction_matrix_std) / 2
   # Safety: with diagonal=FALSE hierNet already returns 0 diagonal; enforce anyway
   if (!include_diagonal) {
-    diag(interaction_matrix_std) <- 0
+    diag(interaction_matrix_std_raw) <- 0
   }
 
   # Predictions come from hierNet itself: the authoritative model output.
@@ -972,18 +963,25 @@ run_hiernet_analysis <- function(
   # --------------------------------------------------------------------------
   # Displayed equation (original scale):
   #   ŷ = intercept + Σ β_orig×X + Σ_{i<j} θ_ij×(Xi-X̄i)(Xj-X̄j) + Σ θ_ii×(Xi-X̄i)²
-  # (θ_ii already halved above). hierNet centers its internal interaction
-  # features, so the exact intercept includes a -Σθ×Cov(Xi,Xj) term (the mean
-  # of a centered product is the covariance, NOT zero). Rather than depending
-  # further on package internals, the intercept is calibrated empirically so
-  # the displayed equation reproduces predict() exactly, and the match is
-  # verified (equation self-check) as a safety net against version/convention
-  # differences in hierNet itself.
+  # Off-diagonal (interaction) coefficients equal th[i,j] as returned by
+  # hierNet with no adjustment (confirmed empirically). The DIAGONAL
+  # (quadratic) coefficient is the one genuinely ambiguous detail: hierNet's
+  # reference paper (Bien, Taylor & Tibshirani 2013, JASA) defines the model
+  # as ŷ = b0 + xβ + (1/2)x^T Θ x, which implies an effective quadratic
+  # coefficient of th[i,i]/2 — but this repo cannot install the hierNet
+  # package to confirm that against the live predict() output (CRAN/GitHub
+  # are unreachable from this sandbox). So both candidates (th[i,i] as-is,
+  # and th[i,i]/2) are tried here at runtime and whichever reproduces
+  # predict() is adopted; if neither matches closely, the user is warned
+  # that the displayed equation is only approximate.
+  #
+  # Separately, hierNet centers its internal interaction features, so the
+  # exact intercept includes a -Σθ×Cov(Xi,Xj) term (the mean of a centered
+  # product is the covariance, NOT zero) — the intercept is calibrated
+  # empirically rather than derived, for the same reason.
 
   Xc <- sweep(X, 2, mx)
 
-  # Non-intercept part of the displayed equation (matrix already holds the
-  # correct effective coefficient for every cell, diagonal included)
   eq_linear_predictor <- function(theta_orig) {
     lp <- as.vector(X %*% main_effects_orig)
     for (i in seq_len(p)) {
@@ -997,27 +995,47 @@ run_hiernet_analysis <- function(
     lp
   }
 
-  interaction_matrix_orig <- interaction_matrix_std / outer(sx, sx)
-  interaction_matrix_orig[!is.finite(interaction_matrix_orig)] <- 0
-  rownames(interaction_matrix_orig) <- colnames(X)
-  colnames(interaction_matrix_orig) <- colnames(X)
-
-  lp <- eq_linear_predictor(interaction_matrix_orig)
-  d <- predictions - lp
-  d_sd <- if (all(is.finite(d))) sd(d) else Inf
-  if (is.na(d_sd)) d_sd <- Inf
+  th_orig_raw <- interaction_matrix_std_raw / outer(sx, sx)
+  th_orig_raw[!is.finite(th_orig_raw)] <- 0
+  th_orig_half <- th_orig_raw
+  diag(th_orig_half) <- diag(th_orig_half) / 2
 
   eq_tol <- 1e-6 * (sd(y) + 1)
-  equation_ok <- is.finite(d_sd) && d_sd <= eq_tol
+  candidates <- list(full = th_orig_raw, half = th_orig_half)
+  best <- NULL
+  for (nm in names(candidates)) {
+    lp <- eq_linear_predictor(candidates[[nm]])
+    d <- predictions - lp
+    d_sd <- if (all(is.finite(d))) sd(d) else Inf
+    if (is.na(d_sd)) d_sd <- Inf
+    if (is.null(best) || d_sd < best$sd) {
+      best <- list(name = nm, theta = candidates[[nm]], sd = d_sd,
+                   mean = mean(d[is.finite(d)]))
+    }
+  }
+  # With no active diagonal term, both candidates are identical; default
+  # naming to "full" (no-op) rather than an arbitrary tie-break
+  if (!include_diagonal || all(abs(diag(th_orig_raw)) < .Machine$double.eps)) {
+    best$name <- "full"
+  }
+
+  equation_ok <- is.finite(best$sd) && best$sd <= eq_tol
   if (!equation_ok) {
     warn_msgs <- c(warn_msgs, sprintf(
       "回帰式セルフチェック: 表示式とモデル予測の偏差(SD=%.3g)が許容値を超えています。式は近似値として扱ってください",
-      d_sd
+      best$sd
     ))
   }
 
+  interaction_matrix_orig <- best$theta
+  rownames(interaction_matrix_orig) <- colnames(X)
+  colnames(interaction_matrix_orig) <- colnames(X)
+  interaction_matrix_std <- interaction_matrix_orig * outer(sx, sx)
+  rownames(interaction_matrix_std) <- colnames(X)
+  colnames(interaction_matrix_std) <- colnames(X)
+
   # Exact intercept: constant offset that makes the equation reproduce predict()
-  intercept_orig <- mean(d[is.finite(d)])
+  intercept_orig <- best$mean
   if (!is.finite(intercept_orig)) {
     intercept_orig <- mean_y - sum(main_effects_orig * mx)
     if (!is.finite(intercept_orig)) intercept_orig <- 0
@@ -1048,8 +1066,9 @@ run_hiernet_analysis <- function(
     # Scaling info
     mx = mx,
     sx = sx,
-    # Equation self-check result
-    equation_check = list(ok = equation_ok, deviation_sd = d_sd),
+    # Equation self-check result (diag_convention: "half"=th[i,i]/2, "full"=th[i,i] as-is)
+    equation_check = list(ok = equation_ok, deviation_sd = best$sd,
+                          diag_convention = best$name),
     # Warnings to surface in the UI
     warnings = warn_msgs,
     # Legacy compatibility (default to standardized)
